@@ -1,6 +1,6 @@
 # AlpineVPN
 
-&gt; Lightweight WireGuard VPN installer for Alpine Linux and other POSIX-compliant systems.
+&gt; Lightweight WireGuard VPN installer for Alpine Linux and POSIX-compliant systems.
 
 AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, specifically optimized for **Alpine Linux** (busybox/ash) while maintaining compatibility with all major Linux distributions. No bash required.
 
@@ -11,7 +11,7 @@ AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, speci
 ## Why AlpineVPN?
 
 - **Zero Bash Dependencies**: Runs on `ash`, `dash`, `busybox sh` - perfect for containerized or minimal systems
-- **Alpine-Optimized**: Native OpenRC support, proper repository handling, and BusyBox compatibility
+- **Alpine-Optimized**: Native OpenRC support, proper repository handling, and BusyBox compatibility  
 - **Cloudflare by Default**: Privacy-focused with `1.1.1.1` as the default DNS (easily changed)
 - **Bulletproof QR Codes**: Falls back to Python if native `qrencode` isn't available
 - **POSIX Compliant**: Uses only standard shell utilities, no GNU extensions
