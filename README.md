@@ -29,7 +29,7 @@ curl -O https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-wireg
 
 ## Performance Test
 
-Real-world speed testing demonstrates excellent throughput even on minimal hardware. On the **smallest Linode Nanode instance** (1 vCPU, 1GB RAM), AlpineVPN achieves **160 Mbps** download speeds when connected from a smartphone client.
+Real-world speed testing demonstrates excellent throughput even on minimal hardware. On the **smallest Linode Nanode instance** (1 vCPU, 1GB RAM), AlpineVPN achieves **~170 Mbps** download speeds when connected from a smartphone client.
 
 <img src="speedtest.jpg" alt="Speed Test" width="50%">
 
