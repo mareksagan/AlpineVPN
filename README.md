@@ -4,9 +4,9 @@
 
 AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, specifically optimized for **Alpine Linux** (busybox/ash) while maintaining compatibility with all major Linux distributions. No bash required.
 
-[![Alpine Linux](https://img.shields.io/badge/Alpine%20Linux-ready-blue?logo=alpine-linux)](https://alpinelinux.org/)
-[![POSIX sh](https://img.shields.io/badge/POSIX%20sh-compatible-green)](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Alpine Linux](https://img.shields.io/badge/Alpine%20Linux-ready-blue?logo=alpine-linux )](https://alpinelinux.org/ )
+[![POSIX sh](https://img.shields.io/badge/POSIX%20sh-compatible-green )](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html )
+[![License](https://img.shields.io/badge/license-MIT-blue.svg )](LICENSE)
 
 ## Why AlpineVPN?
 
@@ -20,8 +20,17 @@ AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, speci
 
 ```bash
 # Download AlpineVPN
-wget https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-wireguard.sh
+wget https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-wireguard.sh 
 sudo sh alpine-wireguard.sh
 
 # Or one-liner with curl
-curl -O https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-wireguard.sh && sudo sh alpine-wireguard.sh
+curl -O https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-wireguard.sh  && sudo sh alpine-wireguard.sh
+```
+
+## Performance Test
+
+Real-world speed testing demonstrates excellent throughput even on minimal hardware. On the **smallest Linode Nanode instance** (1 vCPU, 1GB RAM), AlpineVPN achieves **160 Mbps** download speeds when connected from a smartphone client.
+
+![Speed Test](speedtest.jpg)
+
+*Test conditions: Linode Nanode 1GB (Shared CPU), WireGuard mobile client*
