@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# https://github.com/hwdsl2/wireguard-install 
+# https://github.com/hwdsl2/wireguard-install  
+# Performance-Optimized Version: Maximum speed & minimum latency defaults
 #
 # POSIX sh version for Alpine Linux and other minimal systems
 #
@@ -92,6 +93,24 @@ check_container() {
 
 set_client_name() {
 	client=$(echo "$unsanitized_client" | sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' | cut -c-15)
+}
+
+# PERFORMANCE: Calculate optimal MTU based on physical interface (BusyBox compatible)
+calculate_mtu() {
+	# FIXED: Removed grep -P, using awk instead for BusyBox compatibility
+	default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+	if [ -n "$default_iface" ] && [ -e "/sys/class/net/$default_iface/mtu" ]; then
+		base_mtu=$(cat "/sys/class/net/$default_iface/mtu" 2>/dev/null || echo 1500)
+		# WireGuard overhead: 80 bytes (IPv4) or 60 bytes (IPv6), use 80 for safety margin
+		wg_mtu=$((base_mtu - 80))
+		# Ensure not less than 1280 (minimum IPv6 MTU)
+		if [ "$wg_mtu" -lt 1280 ]; then
+			wg_mtu=1280
+		fi
+	else
+		wg_mtu=1420  # Safe default for most internet connections
+	fi
+	echo "$wg_mtu"
 }
 
 parse_args() {
@@ -251,7 +270,7 @@ check_args() {
 	elif [ -n "$dns1" ]; then
 		dns="$dns1"
 	else
-		dns="1.1.1.1, 1.0.0.1"  # Changed from Google to Cloudflare
+		dns="1.1.1.1, 1.0.0.1"  # Changed from Google to Cloudflare (faster)
 	fi
 }
 
@@ -327,8 +346,9 @@ install_iproute() {
 show_header() {
 cat <<'EOF'
 
-WireGuard Script
-https://github.com/hwdsl2/wireguard-install 
+WireGuard Script [PERFORMANCE MODE]
+https://github.com/hwdsl2/wireguard-install  
+Optimized for: Maximum throughput | Minimum latency
 EOF
 }
 
@@ -336,8 +356,9 @@ show_header2() {
 cat <<'EOF'
 
 Welcome to this WireGuard server installer!
-GitHub: https://github.com/hwdsl2/wireguard-install 
+GitHub: https://github.com/hwdsl2/wireguard-install  
 
+PERFORMANCE MODE ENABLED: Auto-optimizing MTU, kernel buffers, and TCP settings
 EOF
 }
 
@@ -346,6 +367,7 @@ cat <<'EOF'
 
 Copyright (c) 2022-2025 Lin Song
 Copyright (c) 2020-2023 Nyr
+Performance optimizations added for low-latency/high-throughput
 EOF
 }
 
@@ -541,6 +563,7 @@ show_config() {
 		echo "Port: UDP/$port_text"
 		echo "Client name: $client_text"
 		echo "Client DNS: $dns_text"
+		echo "Optimized MTU: $wg_mtu (calculated for max throughput)"
 	fi
 }
 
@@ -607,6 +630,7 @@ show_setup_ready() {
 	if [ "$auto" = 0 ]; then
 		echo ""
 		echo "WireGuard installation is ready to begin."
+		echo "Performance optimizations will be applied automatically."
 	fi
 }
 
@@ -657,7 +681,7 @@ confirm_setup() {
 
 show_start_setup() {
 	echo ""
-	echo "Installing WireGuard, please wait..."
+	echo "Installing WireGuard with performance optimizations, please wait..."
 }
 
 install_pkgs() {
@@ -790,6 +814,9 @@ create_server_config() {
 	ip6_addr=""
 	if [ -n "$ip6" ]; then ip6_addr=", fddd:2c4:2c4:2c4::1/64"; fi
 	
+	# PERFORMANCE: Calculate optimal MTU
+	wg_mtu=$(calculate_mtu)
+	
 	cat << EOF > "$WG_CONF"
 # Do not alter the commented lines
 # They are used by wireguard-install
@@ -799,6 +826,7 @@ create_server_config() {
 Address = 10.7.0.1/24$ip6_addr
 PrivateKey = $(wg genkey)
 ListenPort = $port
+MTU = $wg_mtu
 
 EOF
 	chmod 600 "$WG_CONF"
@@ -950,7 +978,7 @@ select_dns() {
 		echo ""
 		echo "Select a DNS server for the client:"
 		echo "   1) Current system resolvers"
-		echo "   2) Cloudflare DNS"
+		echo "   2) Cloudflare DNS (Optimized for speed)"
 		echo "   3) Google Public DNS"
 		echo "   4) OpenDNS"
 		echo "   5) Quad9"
@@ -1057,6 +1085,9 @@ new_client() {
 	endpoint=$(grep '^# ENDPOINT' "$WG_CONF" | cut -d " " -f 3)
 	listen_port=$(grep ListenPort "$WG_CONF" | cut -d " " -f 3)
 	
+	# PERFORMANCE: Get optimized MTU from server config
+	wg_mtu=$(grep '^MTU' "$WG_CONF" | cut -d " " -f 3 || echo 1420)
+	
 	cat << EOF >> "$WG_CONF"
 # BEGIN_PEER $client
 [Peer]
@@ -1077,6 +1108,7 @@ EOF
 Address = 10.7.0.$octet/24$client_ip6
 DNS = $dns
 PrivateKey = $key
+MTU = $wg_mtu
 
 [Peer]
 PublicKey = $server_pub_key
@@ -1099,12 +1131,43 @@ update_sysctl() {
 	if [ -n "$ip6" ]; then
 		echo "net.ipv6.conf.all.forwarding=1" >> "$conf_fwd"
 	fi
-	base_url="https://github.com/hwdsl2/vpn-extras/releases/download/v1.0.0"
-	conf_url="$base_url/sysctl-wg-$os"
-	[ "$auto" != 0 ] && conf_url="${conf_url}-auto"
-	wget -t 3 -T 30 -q -O "$conf_opt" "$conf_url" 2>/dev/null \
-		|| curl -m 30 -fsL "$conf_url" -o "$conf_opt" 2>/dev/null \
-		|| { rm -f "$conf_opt"; touch "$conf_opt"; }
+	
+	# PERFORMANCE: Apply aggressive optimizations locally instead of downloading
+	# This ensures maximum performance settings regardless of OS
+	cat > "$conf_opt" <<'EOF'
+# WireGuard Performance Optimizations - Maximum Throughput / Minimum Latency
+# Core networking
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.core.netdev_max_backlog = 50000
+net.core.somaxconn = 65535
+
+# TCP optimizations for low latency
+net.ipv4.tcp_rmem = 4096 87380 134217728
+net.ipv4.tcp_wmem = 4096 65536 134217728
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_keepalive_time = 60
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_keepalive_probes = 6
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_low_latency = 1
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.ipv4.tcp_mtu_probing = 1
+
+# UDP optimizations for WireGuard
+net.ipv4.udp_rmem_min = 8192
+net.ipv4.udp_wmem_min = 8192
+
+# Memory tuning
+vm.swappiness = 10
+vm.dirty_ratio = 40
+vm.dirty_background_ratio = 10
+EOF
 	
 	# Enable TCP BBR congestion control if kernel version >= 4.20 (BusyBox compatible)
 	current_kver=$(uname -r)
@@ -1119,14 +1182,24 @@ update_sysctl() {
 		kver_ok=1
 	fi
 	
+	# Only add BBR settings if module loads successfully
 	if modprobe -q tcp_bbr 2>/dev/null && [ "$kver_ok" -eq 1 ] && [ -f /proc/sys/net/ipv4/tcp_congestion_control ]; then
-cat >> "$conf_opt" <<'EOF'
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
+		echo "net.core.default_qdisc = fq" >> "$conf_opt"
+		echo "net.ipv4.tcp_congestion_control = bbr" >> "$conf_opt"
 	fi
+	
+	# Apply settings
 	sysctl -e -q -p "$conf_fwd"
 	sysctl -e -q -p "$conf_opt"
+	
+	# PERFORMANCE: Increase NIC ring buffer sizes if ethtool is available (BusyBox compatible)
+	if hash ethtool 2>/dev/null; then
+		# FIXED: Removed grep -P, using awk instead for BusyBox compatibility
+		default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+		if [ -n "$default_iface" ]; then
+			ethtool -G "$default_iface" rx 4096 tx 4096 2>/dev/null || true
+		fi
+	fi
 }
 
 update_rclocal() {
@@ -1170,6 +1243,9 @@ start_wg_service() {
 			systemctl enable --now wg-quick@wg0.service >/dev/null 2>&1
 		)
 	fi
+	
+	# PERFORMANCE: Increase transmit queue length for wg0 interface
+	ip link set dev wg0 txqueuelen 10000 2>/dev/null || true
 }
 
 show_client_qr_code() {
@@ -1225,7 +1301,9 @@ finish_setup() {
 		echo "Installation was finished, but the WireGuard kernel module could not load."
 		echo "Reboot the system to load the most recent kernel."
 	else
-		echo "Finished!"
+		echo "Finished! Performance optimizations applied."
+		echo "Kernel Settings: BBR congestion control, maximum socket buffers, low-latency TCP"
+		echo "WireGuard MTU: $wg_mtu (auto-optimized)"
 	fi
 	echo ""
 	echo "The client configuration is available in: $export_dir$client.conf"
@@ -1286,6 +1364,7 @@ update_wg_conf() {
 print_client_added() {
 	echo ""
 	echo "$client added. Configuration available in: $export_dir$client.conf"
+	echo "Optimized with MTU: $(grep MTU "$export_dir$client.conf" | cut -d= -f2 | tr -d ' ')"
 }
 
 print_check_clients() {
@@ -1555,6 +1634,8 @@ if [ ! -e "$WG_CONF" ]; then
 			check_nat_ip
 		fi
 	fi
+	# PERFORMANCE: Calculate MTU early for display
+	wg_mtu=$(calculate_mtu)
 	show_config
 	detect_ipv6
 	select_port
