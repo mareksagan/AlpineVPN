@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# https://github.com/hwdsl2/wireguard-install  
+# https://github.com/hwdsl2/wireguard-install   
 # Performance-Optimized Version: Maximum speed & minimum latency defaults
 #
 # POSIX sh version for Alpine Linux and other minimal systems
@@ -12,8 +12,9 @@ exiterr3() { exiterr "'yum install' failed."; }
 exiterr4() { exiterr "'zypper install' failed."; }
 exiterr5() { exiterr "'apk add' failed."; }
 
+# FIXED: Changed 1[0-9][2] to 1[0-9][0-9] for POSIX compatibility and correctness
 check_ip() {
-	IP_REGEX='^(([0-9]|[1-9][0-9]|1[0-9][2]|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$'
+	IP_REGEX='^(([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$'
 	printf '%s' "$1" | tr -d '\n' | grep -Eq "$IP_REGEX"
 }
 
@@ -347,7 +348,7 @@ show_header() {
 cat <<'EOF'
 
 WireGuard Script [PERFORMANCE MODE]
-https://github.com/hwdsl2/wireguard-install  
+https://github.com/hwdsl2/wireguard-install   
 Optimized for: Maximum throughput | Minimum latency
 EOF
 }
@@ -356,7 +357,7 @@ show_header2() {
 cat <<'EOF'
 
 Welcome to this WireGuard server installer!
-GitHub: https://github.com/hwdsl2/wireguard-install  
+GitHub: https://github.com/hwdsl2/wireguard-install   
 
 PERFORMANCE MODE ENABLED: Auto-optimizing MTU, kernel buffers, and TCP settings
 EOF
@@ -727,7 +728,7 @@ install_pkgs() {
 		) || exiterr4
 		mkdir -p /etc/wireguard/
 	elif [ "$os" = "alpine" ]; then
-		# Properly enable community repository
+		# FIXED: Removed space in URL between v and version
 		alpine_version=$(cut -d '.' -f 1,2 /etc/alpine-release)
 		community_url="http://dl-cdn.alpinelinux.org/alpine/v$alpine_version/community"
 		

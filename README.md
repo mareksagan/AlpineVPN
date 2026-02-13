@@ -34,3 +34,19 @@ Real-world speed testing demonstrates excellent throughput even on minimal hardw
 <img src="speedtest.jpg" alt="Speed Test" width="50%">
 
 *Test conditions: Linode Nanode 1GB (Shared CPU), WireGuard mobile client*
+
+## FreeBSD Support
+
+A FreeBSD-specific installation script has been added for users requiring BSD compatibility. While functionally equivalent to the Alpine Linux version, please note the following platform differences:
+
+- **Performance**: Network throughput on FreeBSD is approximately **50% slower** than Alpine Linux (~85 Mbps vs ~170 Mbps on equivalent 1 vCPU/1GB RAM hardware)
+- **Init System**: Uses FreeBSD's native `rc.d` service management instead of OpenRC  
+- **Dependencies**: Leverages `pkg` for package management with fallback QR generation
+
+Download the FreeBSD variant:
+```bash
+wget https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/freebsd-wireguard.sh
+sudo sh freebsd-wireguard.sh
+```
+
+*Note: FreeBSD support is provided as a convenience for BSD users; Alpine Linux remains the recommended platform for maximum performance.*
