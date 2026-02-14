@@ -1177,6 +1177,22 @@ net.ipv4.udp_wmem_min = 8192
 vm.swappiness = 10
 vm.dirty_ratio = 40
 vm.dirty_background_ratio = 10
+
+# Alpine Linux specific optimizations for musl libc and minimal systems
+# Increase max memory map areas (musl uses more small mappings)
+vm.max_map_count = 262144
+
+# Reduce swap activity further for container/embedded environments
+vm.vfs_cache_pressure = 50
+
+# Kernel panic reboot timeout (Alpine often runs headless)
+kernel.panic = 10
+
+# Disable kernel messages during boot (cleaner Alpine console)
+kernel.printk = 3 3 3 3
+
+# Security: Disable ptrace for non-parent (Alpine security hardening)
+kernel.yama.ptrace_scope = 1
 EOF
 	
 	# Enable TCP BBR congestion control if kernel version >= 4.20 (BusyBox compatible)
@@ -1210,6 +1226,68 @@ EOF
 			ethtool -G "$default_iface" rx 4096 tx 4096 2>/dev/null || true
 		fi
 	fi
+	
+	# ALPINE-SPECIFIC: Multi-core network processing (RPS/XPS)
+	# Distribute network interrupts across all CPUs for better performance
+	if [ "$os" = "alpine" ]; then
+		alpine_optimize_multicore_net
+	fi
+}
+
+# Alpine Linux specific: Optimize multi-core network processing
+alpine_optimize_multicore_net() {
+	_default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+	[ -z "$_default_iface" ] && return
+	
+	# Get CPU count (BusyBox compatible)
+	_cpu_count=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+	[ "$_cpu_count" -le 1 ] && return
+	
+	echo "Optimizing multi-core network processing (RPS/XPS)..."
+	
+	# Calculate RPS/XPS mask - use all CPUs
+	# For n CPUs, mask is (2^n - 1) in hex
+	_rps_mask=0
+	_i=0
+	while [ "$_i" -lt "$_cpu_count" ]; do
+		_rps_mask=$((_rps_mask + (1 << _i)))
+		_i=$((_i + 1))
+	done
+	_rps_mask_hex=$(printf '%x' "$_rps_mask")
+	
+	# Apply RPS (Receive Packet Steering)
+	if [ -d "/sys/class/net/$_default_iface/queues" ]; then
+		for _rx_queue in /sys/class/net/"$_default_iface"/queues/rx-*; do
+			[ -e "$_rx_queue/rps_cpus" ] && echo "$_rps_mask_hex" > "$_rx_queue/rps_cpus" 2>/dev/null || true
+			[ -e "$_rx_queue/rps_flow_cnt" ] && echo 32768 > "$_rx_queue/rps_flow_cnt" 2>/dev/null || true
+		done
+		
+		# Apply XPS (Transmit Packet Steering)
+		for _tx_queue in /sys/class/net/"$_default_iface"/queues/tx-*; do
+			[ -e "$_tx_queue/xps_cpus" ] && echo "$_rps_mask_hex" > "$_tx_queue/xps_cpus" 2>/dev/null || true
+		done
+	fi
+	
+	# Increase backlog for RPS
+	echo 65536 > /proc/sys/net/core/netdev_max_backlog 2>/dev/null || true
+	echo 65536 > /proc/sys/net/core/netdev_budget 2>/dev/null || true
+	echo 65536 > /proc/sys/net/core/netdev_budget_usecs 2>/dev/null || true
+	
+	# Alpine-specific: Optimize for musl libc and minimal environment
+	# Increase max anonymous memory mappings (musl uses more small mappings)
+	echo 262144 > /proc/sys/vm/max_map_count 2>/dev/null || true
+	
+	# Enable transparent hugepages for better memory performance
+	if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
+		echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+	fi
+	
+	# CPU governor to performance mode if available (Alpine on bare metal)
+	if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
+		for _gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+			echo performance > "$_gov" 2>/dev/null || true
+		done
+	fi
 }
 
 update_rclocal() {
@@ -1240,6 +1318,13 @@ EOF
 
 start_wg_service() {
 	if [ "$os" = "alpine" ]; then
+		# Alpine-specific: Load wireguard module with optimized parameters
+		if [ -d /sys/module/wireguard ]; then
+			: # Module already loaded
+		elif modprobe wireguard 2>/dev/null; then
+			: # Successfully loaded
+		fi
+		
 		wg-quick up wg0 2>/dev/null || exiterr "Failed to start WireGuard"
 		echo "#!/bin/sh" > /etc/local.d/wireguard.start
 		echo "wg-quick up wg0" >> /etc/local.d/wireguard.start
@@ -1247,6 +1332,9 @@ start_wg_service() {
 		if command -v rc-update >/dev/null 2>&1; then
 			rc-update add local default >/dev/null 2>&1
 		fi
+		
+		# Alpine-specific: Optimize OpenRC for faster boot
+		alpine_optimize_openrc
 	else
 		(
 			set -x
@@ -1256,6 +1344,36 @@ start_wg_service() {
 	
 	# PERFORMANCE: Increase transmit queue length for wg0 interface
 	ip link set dev wg0 txqueuelen 10000 2>/dev/null || true
+}
+
+# Alpine Linux specific: Optimize OpenRC configuration
+alpine_optimize_openrc() {
+	_rc_conf="/etc/rc.conf"
+	
+	# Enable parallel service startup for faster boot
+	if [ -f "$_rc_conf" ]; then
+		if ! grep -q "^rc_parallel=" "$_rc_conf" 2>/dev/null; then
+			echo "rc_parallel=\"YES\"" >> "$_rc_conf"
+		fi
+		
+		# Reduce service timeout for faster failure recovery
+		if ! grep -q "^rc_timeout_stopsec=" "$_rc_conf" 2>/dev/null; then
+			echo "rc_timeout_stopsec=\"10\"" >> "$_rc_conf"
+		fi
+		
+		# Enable color output (cosmetic but helpful)
+		if ! grep -q "^rc_color=" "$_rc_conf" 2>/dev/null; then
+			echo "rc_color=\"yes\"" >> "$_rc_conf"
+		fi
+	fi
+	
+	# Create modprobe.d config for wireguard module parameters
+	mkdir -p /etc/modprobe.d
+	cat > /etc/modprobe.d/wireguard.conf << 'EOF'
+# WireGuard module parameters for Alpine Linux
+# Disable debug logging for performance
+options wireguard debug=0
+EOF
 }
 
 show_client_qr_code() {
