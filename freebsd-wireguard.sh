@@ -129,20 +129,80 @@ calculate_mtu() {
 }
 
 configure_sysctl() {
-    echo "Optimizing kernel..."
+    echo "Optimizing kernel for maximum WireGuard performance..."
     mkdir -p /etc/sysctl.d
     
     cat > /etc/sysctl.d/99-wireguard.conf << 'EOF'
+# Core forwarding
 net.inet.ip.forwarding=1
 net.inet6.ip6.forwarding=1
-kern.ipc.maxsockbuf=16777216
-net.inet.tcp.sendbuf_max=16777216
-net.inet.tcp.recvbuf_max=16777216
+
+# Socket buffer maximums (increased to 128MB for high-throughput WireGuard)
+kern.ipc.maxsockbuf=134217728
+
+# TCP buffer maximums (128MB max, matching Alpine Linux aggressive tuning)
+net.inet.tcp.sendbuf_max=134217728
+net.inet.tcp.recvbuf_max=134217728
+
+# TCP buffer auto-tuning ranges (min/default/max in bytes)
+net.inet.tcp.sendbuf_auto=1
+net.inet.tcp.recvbuf_auto=1
+net.inet.tcp.sendbuf_inc=32768
+net.inet.tcp.recvbuf_inc=65536
+
+# Default TCP socket buffer sizes
 net.inet.tcp.sendspace=262144
 net.inet.tcp.recvspace=262144
-net.inet.udp.recvspace=262144
+
+# UDP socket buffer sizes (increased for WireGuard)
+net.inet.udp.recvspace=2097152
+net.inet.udp.maxdgram=65535
+
+# Aggressive TCP performance tuning
 net.inet.tcp.delayed_ack=0
+net.inet.tcp.rfc1323=1
+net.inet.tcp.rfc1644=1
+net.inet.tcp.rfc3042=1
+net.inet.tcp.rfc3390=1
+net.inet.tcp.rfcmodel=1
+
+# TCP connection tuning
+net.inet.tcp.fastopen=3
+net.inet.tcp.keepidle=60000
+net.inet.tcp.keepintvl=10000
+net.inet.tcp.keepinit=10000
+
+# Congestion control - use CUBIC (FreeBSD equivalent to BBR)
+# Note: FreeBSD does not have BBR, CUBIC is the best available alternative
+net.inet.tcp.cc.algorithm=cubic
+net.inet.tcp.cc.abe=1
+
+# Network interrupt tuning
 net.route.netisr_maxqlen=2048
+
+# Maximum sockets and connections
+kern.ipc.somaxconn=65535
+kern.ipc.acceptqueue_limit=16384
+
+# Network device backlog
+net.inet.ip.maxfragpackets=4096
+net.inet.ip.maxfragsperpacket=128
+net.inet6.ip6.maxfragpackets=4096
+net.inet6.ip6.maxfragsperpacket=128
+
+# IP reassembly tuning
+net.inet.ip.maxchainsent=0
+
+# Memory tuning for network buffers
+kern.ipc.nmbclusters=262144
+kern.ipc.nmbjumbop=131072
+kern.ipc.nmbjumbo=65536
+
+# Virtual memory tuning (matching Alpine approach)
+vm.swappiness=10
+vm.v_free_target=8192
+vm.v_free_min=4096
+vm.v_free_reserved=2048
 EOF
 
     sysctl -f /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
@@ -153,8 +213,22 @@ EOF
 optimize_nic() {
     _iface="$1"
     [ -z "$_iface" ] && return
-    echo "Optimizing $_iface..."
+    echo "Optimizing $_iface for maximum throughput..."
+    
+    # Disable TCP segmentation offload and large receive offload
     ifconfig "$_iface" -tso -lro 2>/dev/null || true
+    
+    # Set larger MTU if supported (jumbo frames)
+    ifconfig "$_iface" mtu 9000 2>/dev/null || true
+    
+    # Increase transmit queue length for high-throughput
+    ifconfig "$_iface" txqueuelen 10000 2>/dev/null || true
+    
+    # Try to enable polling for reduced latency (if supported)
+    sysctl kern.polling.enable=1 2>/dev/null || true
+    
+    # Disable RX/TX checksumming offload issues with some WireGuard setups
+    ifconfig "$_iface" -rxcsum -txcsum 2>/dev/null || true
 }
 
 configure_firewall() {
