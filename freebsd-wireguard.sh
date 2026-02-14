@@ -203,11 +203,92 @@ vm.swappiness=10
 vm.v_free_target=8192
 vm.v_free_min=4096
 vm.v_free_reserved=2048
+
+# FreeBSD-specific network security and performance
+# Drop packets to closed ports (reduces CPU load from port scans)
+net.inet.tcp.blackhole=2
+net.inet.udp.blackhole=1
+
+# Interface queue maximum length (high throughput)
+net.link.ifqmaxlen=2048
+
+# Maximum sockets system-wide
+kern.ipc.maxsockets=204800
+
+# ICMP rate limiting (prevent flood)
+net.inet.icmp.icmplim=250
+
+# Disable logging of failed connections (performance)
+net.inet.tcp.log_in_vain=0
+net.inet.udp.log_in_vain=0
+
+# Disable DROP_SYNFIN (RFC compliant but can cause issues)
+net.inet.tcp.drop_synfin=0
+
+# Socket buffer limits
+kern.ipc.sockbuf_waste_factor=8
+
+# Aggressive TCP reuse for high-connection scenarios
+net.inet.tcp.msl=7500
+net.inet.tcp.always_keepalive=0
+
+# Path MTU discovery
+net.inet.ip.mtudisc=1
+net.inet.tcp.path_mtu_discovery=1
+
+# Randomize port allocation (security)
+net.inet.ip.portrange.randomized=1
+net.inet.ip.portrange.first=1024
+net.inet.ip.portrange.last=65535
+
+# IP fastforwarding (packet forwarding optimization)
+net.inet.ip.fastforwarding=0
 EOF
 
     sysctl -f /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
     sysrc -f /etc/rc.conf gateway_enable="YES" >/dev/null
     sysctl net.inet.ip.forwarding=1 >/dev/null
+    
+    # Configure loader.conf tunables for next boot (FreeBSD-specific)
+    configure_loader_tunables
+}
+
+# FreeBSD loader.conf tunables (require reboot)
+configure_loader_tunables() {
+    _loader_conf="/boot/loader.conf"
+    
+    # Backup original if not already backed up
+    if [ ! -f "$BACKUP_DIR/loader.conf.backup" ] && [ -f "$_loader_conf" ]; then
+        cp "$_loader_conf" "$BACKUP_DIR/loader.conf.backup" 2>/dev/null || true
+    fi
+    
+    # Add performance tunables to loader.conf
+    cat >> "$_loader_conf" << 'EOF'
+
+# WireGuard Performance Tunables (added by AlpineVPN)
+# Network mbuf clusters (must be set at boot)
+kern.ipc.nmbclusters="262144"
+kern.ipc.nmbjumbop="131072"
+kern.ipc.nmbjumbo="65536"
+
+# Maximum interface queue length
+net.link.ifqmaxlen="2048"
+
+# Intel NIC optimizations (if applicable)
+hw.em.rxd="4096"
+hw.em.txd="4096"
+hw.em.msix="1"
+
+# Realtek NIC optimizations (if applicable)
+hw.re.rxd="4096"
+hw.re.txd="4096"
+
+# Disable Spectre/Meltdown mitigations for performance (optional, security risk)
+# hw.ibrs_disable="1"
+
+# TCP segmentation offload support
+device="tso"
+EOF
 }
 
 optimize_nic() {
@@ -229,6 +310,34 @@ optimize_nic() {
     
     # Disable RX/TX checksumming offload issues with some WireGuard setups
     ifconfig "$_iface" -rxcsum -txcsum 2>/dev/null || true
+    
+    # Driver-specific optimizations based on interface name
+    case "$_iface" in
+        em*|igb*|ix*|ixl*)
+            echo "Intel NIC detected - driver-specific optimizations applied"
+            # Intel-specific: enable multiqueue if available
+            ifconfig "$_iface" -txcsum -rxcsum -tso -lro 2>/dev/null || true
+            ;;
+        re*)
+            echo "Realtek NIC detected - driver-specific optimizations applied"
+            # Realtek-specific optimizations
+            ifconfig "$_iface" -txcsum -rxcsum 2>/dev/null || true
+            ;;
+        vtnet*)
+            echo "VirtIO NIC detected (VM) - optimizations applied"
+            # VirtIO-specific: disable LRO/TSO in VMs
+            ifconfig "$_iface" -lro -tso 2>/dev/null || true
+            ;;
+        e1000*)
+            echo "E1000 NIC detected (VM) - optimizations applied"
+            # E1000-specific (often in VMs)
+            ifconfig "$_iface" -txcsum -rxcsum 2>/dev/null || true
+            ;;
+    esac
+    
+    # Show final interface configuration
+    echo "Interface configuration after optimization:"
+    ifconfig "$_iface" 2>/dev/null | grep -E "(mtu|options|capabilities)" | head -5 || true
 }
 
 configure_firewall() {
