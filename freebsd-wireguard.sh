@@ -28,6 +28,61 @@ atomic_write() {
     mv -f "$_tmpfile" "$_file"
 }
 
+# POSIX-compliant sed in-place (no GNU extension)
+sed_inplace() {
+    _script="$1"
+    _file="$2"
+    _tmpf="${_file}.sedtmp.$$"
+    sed "$_script" "$_file" > "$_tmpf" || return 1
+    mv -f "$_tmpf" "$_file"
+}
+
+# Show QR code with fallback (POSIX-compliant)
+show_qr_code() {
+    _config_file="$1"
+    
+    if command -v qrencode >/dev/null 2>&1; then
+        echo "Scan QR code:"
+        qrencode -t UTF8 < "$_config_file"
+        printf '\n↑ That is a QR code containing the client configuration.\n'
+    elif command -v python3 >/dev/null 2>&1 && python3 -c "import qrcode" 2>/dev/null; then
+        echo ""
+        python3 -c "
+import qrcode
+import sys
+try:
+    with open('$_config_file', 'r') as f:
+        data = f.read()
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(data)
+    qr.make(fit=True)
+    qr.print_ascii(invert=True)
+    print()
+except Exception as e:
+    print('Error:', e)
+    sys.exit(1)
+"
+        printf '↑ That is a QR code containing the client configuration.\n'
+    else
+        echo ""
+        echo "═══════════════════════════════════════════════════════════"
+        echo "  QR CODE NOT AVAILABLE"
+        echo "═══════════════════════════════════════════════════════════"
+        echo ""
+        echo "To enable QR codes, install libqrencode:"
+        echo "  pkg install libqrencode"
+        echo ""
+        echo "Or use Python alternative:"
+        echo "  pkg install py311-qrcode (check 'pkg search qrcode' for available versions)"
+        echo ""
+        echo "Config file location: $_config_file"
+        echo ""
+        echo "You can transfer this file to your device via:"
+        echo "  scp $_config_file user@phone:/path/"
+        echo "═══════════════════════════════════════════════════════════"
+    fi
+}
+
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         exiterr "This installer must be run as root"
@@ -143,7 +198,7 @@ install_packages() {
     fi
     
     env ASSUME_ALWAYS_YES=YES pkg install -y wireguard-tools
-    pkg install -y qrencode 2>/dev/null || true
+    pkg install -y libqrencode 2>/dev/null || true
     
     mkdir -p "$WG_DIR"
     chmod 700 "$WG_DIR"
@@ -263,8 +318,8 @@ EOF
     
     chmod 600 "$_client_file"
     
-    # Add to running server
-    _tmpfile=$(mktemp)
+    # Add to running server (POSIX-compliant mktemp with template)
+    _tmpfile=$(mktemp /tmp/wg-psk.XXXXXX) || exiterr "Failed to create temp file"
     printf '%s' "$_psk" > "$_tmpfile"
     wg set wg0 peer "$_client_pub" preshared-key "$_tmpfile" allowed-ips "10.7.0.$_octet/32" 2>/dev/null || \
         echo "Note: Restart WireGuard to activate new peer"
@@ -285,11 +340,8 @@ EOF
         echo "Warning: Config validation failed"
     fi
     
-    # Show QR
-    if command -v qrencode >/dev/null 2>&1; then
-        echo "Scan QR code:"
-        qrencode -t UTF8 < "$_client_file"
-    fi
+    # Show QR code (with Python fallback)
+    show_qr_code "$_client_file"
 }
 
 show_status() {
@@ -315,7 +367,7 @@ remove_client() {
             if [ -n "$_peer_key" ]; then
                 wg set wg0 peer "$_peer_key" remove 2>/dev/null || true
             fi
-            sed -i '' "/^# BEGIN_PEER $_client/,/^# END_PEER $_client/d" "$WG_DIR/wg0.conf"
+            sed_inplace "/^# BEGIN_PEER $_client/,/^# END_PEER $_client/d" "$WG_DIR/wg0.conf"
             rm -f "$WG_DIR/clients/$_client.conf"
             echo "Removed"
             ;;
@@ -372,7 +424,11 @@ menu() {
             4)
                 printf "Client: "; read -r _name
                 _c=$(printf '%s' "$_name" | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c-15)
-                [ -f "$WG_DIR/clients/$_c.conf" ] && qrencode -t UTF8 < "$WG_DIR/clients/$_c.conf" 2>/dev/null || echo "Not found"
+                if [ -f "$WG_DIR/clients/$_c.conf" ]; then
+                    show_qr_code "$WG_DIR/clients/$_c.conf"
+                else
+                    echo "Not found"
+                fi
                 ;;
             5) show_status ;;
             6) uninstall_wireguard ;;

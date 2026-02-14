@@ -96,6 +96,15 @@ set_client_name() {
 	client=$(echo "$unsanitized_client" | sed 's/[^0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-]/_/g' | cut -c-15)
 }
 
+# POSIX-compliant sed in-place (no GNU extension)
+sed_inplace() {
+	script="$1"
+	file="$2"
+	tmpf="${file}.sedtmp.$$"
+	sed "$script" "$file" > "$tmpf" || return 1
+	mv -f "$tmpf" "$file"
+}
+
 # PERFORMANCE: Calculate optimal MTU based on physical interface (BusyBox compatible)
 calculate_mtu() {
 	# FIXED: Removed grep -P, using awk instead for BusyBox compatibility
@@ -738,7 +747,7 @@ install_pkgs() {
 		fi
 		
 		# Uncomment any commented community repos
-		sed -i 's|^#\(http.*/community\)|\1|' /etc/apk/repositories
+		sed_inplace 's|^#\(http.*/community\)|\1|' /etc/apk/repositories
 		
 		(
 			set -x
@@ -1215,7 +1224,7 @@ update_rclocal() {
 			echo '#!/bin/sh' > /etc/rc.local
 		else
 			if [ "$os" = "ubuntu" ] || [ "$os" = "debian" ]; then
-				sed -i '/^exit 0/d' /etc/rc.local
+				sed_inplace '/^exit 0/d' /etc/rc.local
 			fi
 		fi
 cat >> /etc/rc.local <<EOF
@@ -1356,7 +1365,7 @@ enter_client_name() {
 }
 
 update_wg_conf() {
-	tmpfile=$(mktemp)
+	tmpfile=$(mktemp /tmp/wg-peer.XXXXXX)
 	sed -n "/^# BEGIN_PEER $client/,/^# END_PEER $client/p" "$WG_CONF" > "$tmpfile"
 	wg addconf wg0 "$tmpfile"
 	rm -f "$tmpfile"
@@ -1438,7 +1447,7 @@ print_remove_client() {
 remove_client_wg() {
 	peer_pubkey=$(sed -n "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/p" "$WG_CONF" | grep -m 1 PublicKey | cut -d " " -f 3)
 	wg set wg0 peer "$peer_pubkey" remove
-	sed -i "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/d" "$WG_CONF"
+	sed_inplace "/^# BEGIN_PEER $client$/,/^# END_PEER $client$/d" "$WG_CONF"
 	remove_client_conf
 }
 
@@ -1511,7 +1520,7 @@ remove_rclocal_rules() {
 	fi
 	
 	if grep -qs "$ipt_cmd" /etc/rc.local 2>/dev/null; then
-		sed -i "/^$ipt_cmd/d" /etc/rc.local
+		sed_inplace "/^$ipt_cmd/d" /etc/rc.local
 	fi
 }
 
