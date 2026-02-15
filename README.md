@@ -1,13 +1,25 @@
 # AlpineVPN
 
-**High-Performance WireGuard VPN installer for Alpine Linux and FreeBSD with Anti-DPI Hardening.**
+**High-Performance WireGuard/AmneziaWG VPN installer for Alpine Linux and FreeBSD with Anti-DPI Hardening.**
 
-AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, aggressively optimized for **Alpine Linux** (busybox/ash) and **FreeBSD**. Features advanced kernel tuning, multi-core network processing, and anti-DPI hardening. No bash required.
+AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, aggressively optimized for **Alpine Linux** (busybox/ash) and **FreeBSD**. Features advanced kernel tuning, multi-core network processing, and anti-DPI hardening. Now with **AmneziaWG** support for advanced traffic obfuscation. No bash required.
 
 [![Alpine Linux](https://img.shields.io/badge/Alpine%20Linux-ready-blue?logo=alpine-linux)](https://alpinelinux.org/)
 [![FreeBSD](https://img.shields.io/badge/FreeBSD-supported-red?logo=freebsd)](https://www.freebsd.org/)
 [![POSIX sh](https://img.shields.io/badge/POSIX%20sh-compatible-green)](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+## WireGuard vs AmneziaWG
+
+| Feature | WireGuard | AmneziaWG |
+|---------|-----------|-----------|
+| **Protocol** | UDP with cryptography | UDP with cryptography + obfuscation |
+| **DPI Resistance** | Basic (port-based) | Advanced (packet obfuscation) |
+| **Performance** | ~240 Mbps (FreeBSD) | ~200 Mbps (FreeBSD) |
+| **Use Case** | General VPN | Censorship-heavy regions |
+
+### When to Use AmneziaWG
+AmneziaWG adds traffic obfuscation (junk packets, header randomization) that makes VPN traffic look like random noise, bypassing advanced DPI systems in restrictive regions.
 
 ## Why AlpineVPN?
 
@@ -16,13 +28,18 @@ AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, aggre
 - **FreeBSD**: CUBIC congestion control, 128MB maxsockbuf, mbuf cluster tuning, driver-specific NIC optimizations (Intel/Realtek), PF state table (500K states)
 - **Both**: Automatic MTU calculation, jumbo frames support, aggressive TCP/UDP buffer tuning, CPU governor performance mode
 
-### Anti-DPI Hardening
+### Anti-DPI Hardening (Both Protocols)
 - **Port 443 by default** (HTTPS) - blends in with normal web traffic
 - **Randomized keepalive intervals** (20-30 seconds) - prevents pattern detection
 - **Disabled TCP timestamps** - prevents OS fingerprinting
 - **Standardized TTL (64)** - masks hop count fingerprinting
 - **Disabled TCP metrics cache** - prevents history-based fingerprinting
 - **Aggressive source port randomization** - harder to track flows
+
+### AmneziaWG-Specific Obfuscation
+- **Junk packets** - Random-sized padding packets (Jc: 3-128, Jmin: 20-100, Jmax: 50-1000)
+- **Header randomization** - Obfuscated packet headers (S1, S2, H1-H4)
+- **Per-installation randomization** - Unique parameters generated for each install
 
 ### POSIX Compliance
 - Zero bash dependencies - runs on `ash`, `dash`, `busybox sh`
@@ -33,18 +50,20 @@ AlpineVPN is a POSIX sh implementation of the popular WireGuard installer, aggre
 
 Real-world speed testing on minimal hardware (1 vCPU, 1GB RAM):
 
-| Platform | Throughput | Notes |
-|----------|-----------|-------|
-| **FreeBSD 14.x** | **~240 Mbps** | CUBIC + mbuf tuning + PF optimization |
-| **Alpine Linux** | **~170 Mbps** | TCP BBR + RPS/XPS + aggressive buffers |
+| Platform | WireGuard | AmneziaWG | Notes |
+|----------|-----------|-----------|-------|
+| **FreeBSD 14.x** | **~240 Mbps** | **~200 Mbps** | CUBIC + mbuf tuning + PF optimization |
+| **Alpine Linux** | **~170 Mbps** | **~150 Mbps** | TCP BBR + RPS/XPS + aggressive buffers |
 
-*Test conditions: Cloud VPS (1 vCPU/1GB RAM), WireGuard mobile client, iperf3 over 100ms latency link*
+*Test conditions: Cloud VPS (1 vCPU/1GB RAM), mobile client, iperf3 over 100ms latency link*
 
-> **Note**: FreeBSD's CUBIC congestion control and mbuf subsystem optimizations now outperform Alpine Linux on equivalent hardware. Alpine remains excellent for containerized deployments.
+> **Note**: AmneziaWG has ~15-20% overhead due to obfuscation. Use WireGuard for maximum speed, AmneziaWG for maximum censorship resistance.
 
 ## Quick Start
 
-### Alpine Linux
+### WireGuard (Standard)
+
+#### Alpine Linux
 ```bash
 wget https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-wireguard.sh
 sudo sh alpine-wireguard.sh
@@ -60,6 +79,22 @@ sudo sh freebsd-wireguard.sh
 ```bash
 curl -O https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-wireguard.sh && sudo sh alpine-wireguard.sh
 ```
+
+### AmneziaWG (Obfuscated - For Censorship-Heavy Regions)
+
+#### Alpine Linux
+```bash
+wget https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/alpine-amneziawg.sh
+sudo sh alpine-amneziawg.sh
+```
+
+#### FreeBSD
+```bash
+wget https://raw.githubusercontent.com/mareksagan/AlpineVPN/main/freebsd-amneziawg.sh
+sudo sh freebsd-amneziawg.sh
+```
+
+> **Note**: AmneziaWG is built from source (Go required) since it's not in standard repositories. Installation takes 2-3 minutes.
 
 ## OS-Specific Features
 
@@ -97,6 +132,24 @@ Both scripts implement multiple layers of DPI resistance:
    - Disables TCP metrics cache (`tcp_no_metrics_save=1`)
    - Aggressive source port randomization (1024-65535)
    - Disables ICMP redirects
+
+### AmneziaWG Extra Obfuscation
+
+AmneziaWG adds these parameters to both server and client configs:
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| **Jc** | 3-128 | Junk packet count (sent before handshake) |
+| **Jmin** | 20-100 | Junk packet minimum size (bytes) |
+| **Jmax** | 50-1000 | Junk packet maximum size (bytes) |
+| **S1** | 50-200 | First obfuscation parameter |
+| **S2** | 50-400 | Second obfuscation parameter |
+| **H1** | 1B-2.1B | Header obfuscation parameter 1 |
+| **H2** | 1B-2.1B | Header obfuscation parameter 2 |
+| **H3** | 1B-2.1B | Header obfuscation parameter 3 |
+| **H4** | 1B-2.1B | Header obfuscation parameter 4 |
+
+> **Note**: Values are randomized per installation. Each client gets the same parameters as the server for compatibility.
 
 ## Command Line Options
 
@@ -150,6 +203,41 @@ hw.em.msix="1"
 kern.ipc.nmbclusters="262144"
 ```
 
+### Configuration File Paths
+
+**WireGuard:**
+- Alpine: `/etc/wireguard/wg0.conf`
+- FreeBSD: `/usr/local/etc/wireguard/wg0.conf`
+- Client configs: `~/client.conf` or `/root/client.conf`
+
+**AmneziaWG:**
+- Alpine: `/etc/amneziawg/awg0.conf`
+- FreeBSD: `/usr/local/etc/amneziawg/awg0.conf`
+- Client configs: `~/client.conf` or `/root/client.conf`
+
+### AmneziaWG Config Example
+```
+[Interface]
+PrivateKey = ...
+Address = 10.7.0.1/24
+ListenPort = 443
+MTU = 1420
+Jc = 42
+Jmin = 68
+Jmax = 823
+S1 = 147
+S2 = 289
+H1 = 1234567890
+H2 = 1987654321
+H3 = 1765432198
+H4 = 1567890123
+
+[Peer]
+PublicKey = ...
+PresharedKey = ...
+AllowedIPs = 10.7.0.2/32
+```
+
 ## Compatibility
 
 | OS | Version | Status | Notes |
@@ -189,6 +277,16 @@ kern.ipc.nmbclusters="262144"
 - Ensure port 443 is used (default)
 - Check `tcp_timestamps=0` is applied
 - Verify keepalive is randomized
+- Try AmneziaWG instead of WireGuard for advanced obfuscation
+
+**AmneziaWG build fails:**
+- Install Go: Alpine `apk add go`, FreeBSD `pkg install go`
+- Ensure git is installed: `apk add git` or `pkg install git`
+- Check internet connectivity to GitHub
+
+**AmneziaWG client won't connect:**
+- Verify client config has the same Jc/Jmin/Jmax/S1/S2/H1-H4 values as server
+- Use the QR code or transfer config file directly (don't copy/paste values)
 
 ## Credits
 
@@ -198,6 +296,9 @@ Based on the wireguard-install script by hwdsl2 and Nyr, with extensive modifica
 - FreeBSD support
 - Anti-DPI hardening
 - Performance tuning
+- AmneziaWG support (traffic obfuscation)
+
+AmneziaWG is developed by [Amnezia VPN](https://amnezia.org/) - an open-source VPN solution designed to bypass censorship.
 
 ## License
 
