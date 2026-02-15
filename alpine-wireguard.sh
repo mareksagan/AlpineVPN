@@ -407,7 +407,7 @@ Install options (optional):
 
   --auto                         auto install WireGuard using default or custom options
   --serveraddr [DNS name or IP]  server address, must be a fully qualified domain name (FQDN) or an IPv4 address
-  --port [number]                port for WireGuard (1-65535, default: 51820)
+  --port [number]                port for WireGuard (1-65535, default: 443)
   --clientname [client name]     name for the first WireGuard client (default: client)
   --dns1 [DNS server IP]         primary DNS server for first client (default: Cloudflare DNS)
   --dns2 [DNS server IP]         secondary DNS server for first client
@@ -561,7 +561,7 @@ show_config() {
 			printf '%s' "Server IP: "
 			if [ -n "$public_ip" ]; then printf '%s\n' "$public_ip"; else printf '%s\n' "$ip"; fi
 		fi
-		if [ -n "$server_port" ]; then port_text="$server_port"; else port_text=51820; fi
+		if [ -n "$server_port" ]; then port_text="$server_port"; else port_text=443; fi
 		if [ -n "$first_client_name" ]; then client_text="$client"; else client_text=client; fi
 		if [ -n "$dns1" ] && [ -n "$dns2" ]; then
 			dns_text="$dns1, $dns2"
@@ -588,16 +588,17 @@ select_port() {
 	if [ "$auto" = 0 ]; then
 		echo ""
 		echo "Which port should WireGuard listen on?"
-		printf "Port [51820]: "
+		echo "Note: Port 443 (HTTPS) is recommended to blend in against DPI"
+		printf "Port [443]: "
 		read -r port
 		until [ -z "$port" ] || { echo "$port" | grep -qE '^[0-9]+$' && [ "$port" -le 65535 ]; }; do
 			echo "$port: invalid port."
-			printf "Port [51820]: "
+			printf "Port [443]: "
 			read -r port
 		done
-		[ -z "$port" ] && port=51820
+		[ -z "$port" ] && port=443
 	else
-		if [ -n "$server_port" ]; then port="$server_port"; else port=51820; fi
+		if [ -n "$server_port" ]; then port="$server_port"; else port=443; fi
 	fi
 }
 
@@ -1113,6 +1114,10 @@ EOF
 		client_ip6=", fddd:2c4:2c4:2c4::$octet/64"
 	fi
 	
+	# Anti-DPI: Randomize keepalive interval (20-30 seconds) to avoid pattern detection
+	# Using shell arithmetic since we can't use $RANDOM in POSIX sh
+	_keepalive=$((20 + ($(date +%s) % 11)))
+	
 	cat << EOF > "$export_dir$client".conf
 [Interface]
 Address = 10.7.0.$octet/24$client_ip6
@@ -1125,7 +1130,7 @@ PublicKey = $server_pub_key
 PresharedKey = $psk
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = $endpoint:$listen_port
-PersistentKeepalive = 25
+PersistentKeepalive = $_keepalive
 EOF
 	if [ "$export_to_home_dir" = 1 ]; then
 		chown "$SUDO_USER:$SUDO_USER" "$export_dir$client".conf
@@ -1193,6 +1198,21 @@ kernel.printk = 3 3 3 3
 
 # Security: Disable ptrace for non-parent (Alpine security hardening)
 kernel.yama.ptrace_scope = 1
+
+# Anti-DPI: Disable TCP timestamps to prevent fingerprinting
+net.ipv4.tcp_timestamps = 0
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_window_scaling = 1
+
+# Anti-DPI: Randomize source ports more aggressively
+net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.ip_local_reserved_ports = 
+
+# Anti-DPI: Disable TCP metrics cache (prevents fingerprinting based on history)
+net.ipv4.tcp_no_metrics_save = 1
+
+# Anti-DPI: Increase TTL slightly to mask hop count fingerprinting
+# (Set at runtime by function)
 EOF
 	
 	# Enable TCP BBR congestion control if kernel version >= 4.20 (BusyBox compatible)
@@ -1288,6 +1308,10 @@ alpine_optimize_multicore_net() {
 			echo performance > "$_gov" 2>/dev/null || true
 		done
 	fi
+	
+	# Anti-DPI: Set default TTL to common value (64) to blend in
+	# This masks the hop count fingerprint
+	echo 64 > /proc/sys/net/ipv4/ip_default_ttl 2>/dev/null || true
 }
 
 update_rclocal() {

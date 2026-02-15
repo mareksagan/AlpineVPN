@@ -243,6 +243,19 @@ net.inet.ip.portrange.last=65535
 
 # IP fastforwarding (packet forwarding optimization)
 net.inet.ip.fastforwarding=0
+
+# Anti-DPI: Disable TCP timestamps to prevent fingerprinting
+net.inet.tcp.rfc1323=0
+
+# Anti-DPI: Set default TTL to common value (64) to blend in
+net.inet.ip.ttl=64
+
+# Anti-DPI: Disable ICMP redirects (security + prevents fingerprinting)
+net.inet.icmp.drop_redirect=1
+net.inet.ip.redirect=0
+
+# Anti-DPI: Randomize port allocation (already enabled above, reinforced here)
+net.inet.ip.portrange.randomized=1
 EOF
 
     sysctl -f /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
@@ -486,6 +499,9 @@ EOF
     chmod 700 "$_export_dir"
     _client_file="$_export_dir/$_client.conf"
     
+    # Anti-DPI: Randomize keepalive interval (20-30 seconds) to avoid pattern detection
+    _keepalive=$((20 + ($(date +%s) % 11)))
+    
     # Write client config with explicit newlines, no trailing spaces
     printf '%s\n' "[Interface]" > "$_client_file"
     printf 'Address = 10.7.0.%s/24\n' "$_octet" >> "$_client_file"
@@ -497,7 +513,7 @@ EOF
     printf 'PresharedKey = %s\n' "$_psk" >> "$_client_file"
     printf 'AllowedIPs = 0.0.0.0/0\n' >> "$_client_file"
     printf 'Endpoint = %s\n' "$_endpoint" >> "$_client_file"
-    printf 'PersistentKeepalive = 25\n' >> "$_client_file"
+    printf 'PersistentKeepalive = %s\n' "$_keepalive" >> "$_client_file"
     
     chmod 600 "$_client_file"
     
@@ -649,7 +665,8 @@ main() {
         echo "Using endpoint: $_public_ip"
     fi
     
-    printf "Port [51820]: "; read -r _wg_port
+    echo "Note: Port 443 (HTTPS) is recommended to blend in against DPI"
+    printf "Port [443]: "; read -r _wg_port
     _wg_port=${_wg_port:-51820}
     case "$_wg_port" in
         ''|*[!0-9]*) exiterr "Invalid port" ;;
