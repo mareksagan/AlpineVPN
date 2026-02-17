@@ -6,7 +6,8 @@
 set -eu
 
 exiterr() { 
-    echo "Error: $1" >&2 
+    echo ""
+    echo "  ✗ Error: $1" >&2 
     exit 1 
 }
 
@@ -14,6 +15,14 @@ WG_DIR="/usr/local/etc/wireguard"
 PF_CONF="/etc/pf.conf"
 BACKUP_DIR="/var/backups/wireguard-install-$(date +%Y%m%d-%H%M%S)"
 SERVER_ENDPOINT_FILE="$WG_DIR/endpoint.txt"
+
+show_header() {
+    echo ""
+    echo "╔═══════════════════════════════════════════════════════════╗"
+    echo "║         WireGuard VPN Script - Performance Mode           ║"
+    echo "║                   FreeBSD 14.x Edition                    ║"
+    echo "╚═══════════════════════════════════════════════════════════╝"
+}
 
 # Sanitize WireGuard keys (remove all whitespace)
 sanitize_key() {
@@ -41,12 +50,13 @@ sed_inplace() {
 show_qr_code() {
     _config_file="$1"
     
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    
     if command -v qrencode >/dev/null 2>&1; then
-        echo "Scan QR code:"
         qrencode -t UTF8 < "$_config_file"
-        printf '\n↑ That is a QR code containing the client configuration.\n'
+        printf '\n  ↑ That is a QR code containing the client configuration.\n'
     elif command -v python3 >/dev/null 2>&1 && python3 -c "import qrcode" 2>/dev/null; then
-        echo ""
         python3 -c "
 import qrcode
 import sys
@@ -62,25 +72,24 @@ except Exception as e:
     print('Error:', e)
     sys.exit(1)
 "
-        printf '↑ That is a QR code containing the client configuration.\n'
+        printf '\n  ↑ That is a QR code containing the client configuration.\n'
     else
-        echo ""
-        echo "═══════════════════════════════════════════════════════════"
         echo "  QR CODE NOT AVAILABLE"
         echo "═══════════════════════════════════════════════════════════"
         echo ""
-        echo "To enable QR codes, install libqrencode:"
-        echo "  pkg install libqrencode"
+        echo "  To enable QR codes, install libqrencode:"
+        echo "    pkg install libqrencode"
         echo ""
-        echo "Or use Python alternative:"
-        echo "  pkg install py311-qrcode (check 'pkg search qrcode' for available versions)"
+        echo "  Or use Python alternative:"
+        echo "    pkg install py311-qrcode"
+        echo "    (check 'pkg search qrcode' for available versions)"
         echo ""
-        echo "Config file location: $_config_file"
+        echo "  Config file: $_config_file"
         echo ""
-        echo "You can transfer this file to your device via:"
-        echo "  scp $_config_file user@phone:/path/"
-        echo "═══════════════════════════════════════════════════════════"
+        echo "  Transfer this file to your device via:"
+        echo "    scp $_config_file user@phone:/path/"
     fi
+    echo "═══════════════════════════════════════════════════════════"
 }
 
 check_root() {
@@ -100,7 +109,8 @@ check_os() {
     if [ "$_major" -lt 14 ]; then
         exiterr "FreeBSD 14.0+ required. Found: $_os_version"
     fi
-    echo "Detected FreeBSD $_os_version"
+    echo ""
+    echo "  Detected: FreeBSD $_os_version"
 }
 
 check_ip() {
@@ -129,7 +139,8 @@ calculate_mtu() {
 }
 
 configure_sysctl() {
-    echo "Optimizing kernel for maximum WireGuard performance..."
+    echo ""
+    echo "  Optimizing kernel for maximum WireGuard performance..."
     mkdir -p /etc/sysctl.d
     
     cat > /etc/sysctl.d/99-wireguard.conf << 'EOF'
@@ -307,7 +318,8 @@ EOF
 optimize_nic() {
     _iface="$1"
     [ -z "$_iface" ] && return
-    echo "Optimizing $_iface for maximum throughput..."
+    echo ""
+    echo "  Optimizing $_iface for maximum throughput..."
     
     # Disable TCP segmentation offload and large receive offload
     ifconfig "$_iface" -tso -lro 2>/dev/null || true
@@ -385,7 +397,8 @@ EOF
 }
 
 install_packages() {
-    echo "Installing WireGuard..."
+    echo ""
+    echo "  Installing WireGuard..."
     env ASSUME_ALWAYS_YES=YES pkg update -q || exiterr "pkg update failed"
     
     if ! kldstat -q -m if_wg; then
@@ -407,7 +420,8 @@ create_server_config() {
     _wg_port="$2"
     _wg_mtu="$3"
     
-    echo "Creating server config..."
+    echo ""
+    echo "  Creating server configuration..."
     
     # Generate keys and sanitize immediately (strip newlines)
     _server_priv=$(wg genkey | tr -d '\n')
@@ -433,7 +447,8 @@ EOF
 
 start_wireguard() {
     _wg_port="$1"
-    echo "Starting WireGuard..."
+    echo ""
+    echo "  Starting WireGuard..."
     
     ifconfig wg0 destroy 2>/dev/null || true
     
@@ -442,7 +457,8 @@ start_wireguard() {
     fi
     
     ifconfig wg0 >/dev/null 2>&1 || exiterr "Interface failed"
-    echo "WireGuard running on port $_wg_port"
+    echo ""
+    echo "  ✓ WireGuard running on port $_wg_port"
 }
 
 add_client() {
@@ -463,7 +479,8 @@ add_client() {
     done
     [ "$_octet" -eq 254 ] && exiterr "No IPs available"
     
-    echo "Creating client $_client (10.7.0.$_octet)..."
+    echo ""
+    echo "  Creating client '$_client' (10.7.0.$_octet)..."
     
     # Generate and sanitize keys
     _client_priv=$(wg genkey | tr -d '\n')
@@ -528,9 +545,9 @@ EOF
         chown "$SUDO_USER:$SUDO_USER" "$_client_file" 2>/dev/null || true
     fi
     
-    echo "Client '$_client' created successfully"
-    echo "Location: $_client_file"
     echo ""
+    echo "  ✓ Client '$_client' created successfully"
+    echo "  Location: $_client_file"
     
     # Validate config syntax
     if wg-quick strip "$_client_file" >/dev/null 2>&1; then
@@ -544,10 +561,14 @@ EOF
 }
 
 show_status() {
-    echo "=== WireGuard Status ==="
-    ifconfig wg0 2>/dev/null || { echo "Not running"; return 1; }
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  WireGuard Status"
+    echo "═══════════════════════════════════════════════════════════"
+    ifconfig wg0 2>/dev/null || { echo ""; echo "  Not running"; echo "═══════════════════════════════════════════════════════════"; return 1; }
     echo ""
     wg show wg0 2>/dev/null || true
+    echo "═══════════════════════════════════════════════════════════"
 }
 
 remove_client() {
@@ -558,7 +579,7 @@ remove_client() {
         exiterr "Client not found"
     fi
     
-    printf "Remove '%s'? [y/N] " "$_client"
+    printf "  Remove '%s'? [y/N] " "$_client"
     read -r _confirm
     case "$_confirm" in
         [yY])
@@ -574,7 +595,7 @@ remove_client() {
 }
 
 uninstall_wireguard() {
-    printf "Uninstall WireGuard? [y/N] "
+    printf "  Uninstall WireGuard? [y/N] "
     read -r _confirm
     case "$_confirm" in
         [yY])
@@ -588,7 +609,8 @@ uninstall_wireguard() {
             fi
             
             rm -rf "$WG_DIR" /etc/sysctl.d/99-wireguard.conf
-            echo "Uninstalled"
+            echo ""
+            echo "  ✓ WireGuard uninstalled"
             ;;
     esac
 }
@@ -596,15 +618,19 @@ uninstall_wireguard() {
 menu() {
     while true; do
         echo ""
-        echo "WireGuard Management"
-        echo "1) Add client"
-        echo "2) List clients"
-        echo "3) Remove client"
-        echo "4) Show QR"
-        echo "5) Status"
-        echo "6) Uninstall"
-        echo "7) Exit"
-        printf "Select: "
+        echo "═══════════════════════════════════════════════════════════"
+        echo "  WireGuard Management"
+        echo "═══════════════════════════════════════════════════════════"
+        echo ""
+        echo "    1) Add client"
+        echo "    2) List clients"
+        echo "    3) Remove client"
+        echo "    4) Show QR code"
+        echo "    5) Show status"
+        echo "    6) Uninstall"
+        echo "    7) Exit"
+        echo ""
+        printf "  Select: "
         read -r _opt
         
         case "$_opt" in
@@ -647,15 +673,23 @@ main() {
     mkdir -p "$BACKUP_DIR"
     
     if [ -f "$WG_DIR/wg0.conf" ]; then
+        show_header
         menu
         exit 0
     fi
     
-    echo "=== WireGuard Installer ==="
+    echo ""
+    echo "╔═══════════════════════════════════════════════════════════╗"
+    echo "║         Welcome to the WireGuard Server Installer         ║"
+    echo "║                   FreeBSD 14.x Edition                    ║"
+    echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
     
     _ip=$(ifconfig "$_default_iface" | grep "inet " | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
-    check_ip "$_ip" || exiterr "Invalid IP"
+    check_ip "$_ip" || exiterr "Invalid IP detected"
+    
+    echo "  Interface: $_default_iface"
+    echo "  Local IP: $_ip"
     
     _public_ip="$_ip"
     if printf '%s' "$_ip" | grep -Eq '^(10|127|172\.(1[6-9]|2[0-9]|3[0-1])|192\.168|169\.254)\.'; then
@@ -694,10 +728,13 @@ main() {
     add_client "$_first_client"
     
     echo ""
-    echo "==================================="
-    echo "Server: ${_public_ip}:${_wg_port}"
-    echo "Client: $WG_DIR/clients/$_first_client.conf"
-    echo "==================================="
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  ✓ Installation Complete"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Server: ${_public_ip}:${_wg_port}"
+    echo "  Client: $WG_DIR/clients/$_first_client.conf"
+    echo "═══════════════════════════════════════════════════════════"
 }
 
 main "$@"

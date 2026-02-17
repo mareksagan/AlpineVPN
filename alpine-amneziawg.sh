@@ -441,65 +441,70 @@ ensure_tun() {
 show_header() {
 cat <<'EOF'
 
-AmneziaWG Script [PERFORMANCE MODE - DPI EVASION]
-https://github.com/amnezia-vpn/amneziawg-go
-Optimized for: Maximum throughput | Minimum latency | DPI evasion
+╔═══════════════════════════════════════════════════════════╗
+║       AmneziaWG VPN Script - Performance + DPI Evasion    ║
+║          https://github.com/amnezia-vpn/amneziawg-go      ║
+╚═══════════════════════════════════════════════════════════╝
 EOF
 }
 
 show_header2() {
 cat <<'EOF'
 
-Welcome to this AmneziaWG server installer!
-GitHub: https://github.com/amnezia-vpn/amneziawg-go
+╔═══════════════════════════════════════════════════════════╗
+║        Welcome to the AmneziaWG Server Installer          ║
+║          https://github.com/amnezia-vpn/amneziawg-go      ║
+╚═══════════════════════════════════════════════════════════╝
 
-PERFORMANCE MODE ENABLED: Auto-optimizing MTU, kernel buffers, and TCP settings
-DPI EVASION ENABLED: Junk packets, header obfuscation, randomized keepalive
+  Performance Mode: Auto-optimizing MTU, kernel buffers, and
+  TCP settings for maximum throughput and minimum latency.
+
+  DPI Evasion: Junk packets, header obfuscation, and
+  randomized keepalive for Deep Packet Inspection evasion.
 EOF
 }
 
 show_header3() {
 cat <<'EOF'
 
-Copyright (c) 2022-2025 Lin Song (WireGuard base)
-Copyright (c) 2020-2023 Nyr (WireGuard base)
-AmneziaWG obfuscation added for DPI evasion
-Performance optimizations added for low-latency/high-throughput
+  Copyright (c) 2022-2025 Lin Song (WireGuard base)
+  Copyright (c) 2020-2023 Nyr (WireGuard base)
+  AmneziaWG obfuscation added for DPI evasion
+  Performance optimizations for low-latency/high-throughput
 EOF
 }
 
 show_usage() {
 	if [ -n "$1" ]; then
-		echo "Error: $1" >&2
+		echo ""
+		echo "  ✗ Error: $1" >&2
 	fi
 	show_header
 	show_header3
 cat 1>&2 <<EOF
 
-Usage: sh $0 [options]
+  Usage: sh $0 [options]
 
-Options:
+  Client Management:
+    --addclient [name]      Add a new client
+    --listclients           List existing clients
+    --removeclient [name]   Remove an existing client
+    --showclientqr [name]   Show QR code for a client
 
-  --addclient [client name]      add a new client
-  --dns1 [DNS server IP]         primary DNS server for new client (optional, default: Cloudflare DNS)
-  --dns2 [DNS server IP]         secondary DNS server for new client (optional)
-  --listclients                  list the names of existing clients
-  --removeclient [client name]   remove an existing client
-  --showclientqr [client name]   show QR code for an existing client
-  --uninstall                    remove AmneziaWG and delete all configuration
-  -y, --yes                      assume "yes" as answer to prompts when removing a client or removing AmneziaWG
-  -h, --help                     show this help message and exit
+  Installation:
+    --auto                  Auto-install with default/custom options
+    --serveraddr [address]  Server DNS name or IPv4 address
+    --port [number]         AmneziaWG port (1-65535, default: 443)
+    --clientname [name]     First client name (default: client)
+    --dns1 [IP]             Primary DNS (default: Cloudflare)
+    --dns2 [IP]             Secondary DNS (optional)
 
-Install options (optional):
+  Other:
+    --uninstall             Remove AmneziaWG and all configuration
+    -y, --yes               Assume "yes" to prompts
+    -h, --help              Show this help message
 
-  --auto                         auto install AmneziaWG using default or custom options
-  --serveraddr [DNS name or IP]  server address, must be a fully qualified domain name (FQDN) or an IPv4 address
-  --port [number]                port for AmneziaWG (1-65535, default: 443)
-  --clientname [client name]     name for the first AmneziaWG client (default: client)
-  --dns1 [DNS server IP]         primary DNS server for first client (default: Cloudflare DNS)
-  --dns2 [DNS server IP]         secondary DNS server for first client
-
-To customize options, you may also run this script without arguments.
+  Run without arguments for interactive setup.
 EOF
 	exit 1
 }
@@ -1888,33 +1893,51 @@ except Exception as e:
 
 finish_setup() {
 	echo ""
+	echo "═══════════════════════════════════════════════════════════"
 	if ! hash awg-quick 2>/dev/null; then
-		echo "Warning!"
-		echo "Installation was finished, but the AmneziaWG tools are not available."
-		echo "Reboot the system to complete installation."
+		echo "  ⚠ Warning"
+		echo "═══════════════════════════════════════════════════════════"
+		echo ""
+		echo "  Installation was finished, but the AmneziaWG tools"
+		echo "  are not available. Reboot the system to complete"
+		echo "  installation."
 	else
-		echo "Finished! Performance optimizations and DPI evasion applied."
-		echo "Kernel Settings: BBR congestion control, maximum socket buffers, low-latency TCP"
-		echo "DPI Evasion: Junk packets, header obfuscation, randomized keepalive"
-		echo "AmneziaWG MTU: $wg_mtu (auto-optimized for obfuscation)"
+		echo "  ✓ Installation Complete"
+		echo "═══════════════════════════════════════════════════════════"
+		echo ""
+		echo "  Performance optimizations applied:"
+		echo "    • BBR congestion control enabled"
+		echo "    • Maximum socket buffers configured"
+		echo "    • Low-latency TCP settings applied"
+		echo "    • AmneziaWG MTU: $wg_mtu (auto-optimized)"
+		echo ""
+		echo "  DPI Evasion features enabled:"
+		echo "    • Junk packet obfuscation"
+		echo "    • Header obfuscation"
+		echo "    • Randomized keepalive intervals"
 	fi
 	echo ""
-	echo "The client configuration is available in: $export_dir$client.conf"
-	echo "New clients can be added by running this script again."
+	echo "  Client configuration: $export_dir$client.conf"
+	echo "  Run this script again to add more clients."
+	echo "═══════════════════════════════════════════════════════════"
 }
 
 select_menu_option() {
 	echo ""
-	echo "AmneziaWG is already installed."
+	echo "═══════════════════════════════════════════════════════════"
+	echo "  AmneziaWG is already installed"
+	echo "═══════════════════════════════════════════════════════════"
 	echo ""
-	echo "Select an option:"
-	echo "   1) Add a new client"
-	echo "   2) List existing clients"
-	echo "   3) Remove an existing client"
-	echo "   4) Show QR code for a client"
-	echo "   5) Remove AmneziaWG"
-	echo "   6) Exit"
-	printf "Option: "
+	echo "  Select an option:"
+	echo ""
+	echo "    1) Add a new client"
+	echo "    2) List existing clients"
+	echo "    3) Remove an existing client"
+	echo "    4) Show QR code for a client"
+	echo "    5) Remove AmneziaWG"
+	echo "    6) Exit"
+	echo ""
+	printf "  Option: "
 	read -r option
 	until echo "$option" | grep -qE '^[1-6]$'; do
 		echo "$option: invalid selection."

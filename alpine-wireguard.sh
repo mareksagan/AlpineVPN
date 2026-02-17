@@ -356,63 +356,66 @@ install_iproute() {
 show_header() {
 cat <<'EOF'
 
-WireGuard Script [PERFORMANCE MODE]
-https://github.com/hwdsl2/wireguard-install   
-Optimized for: Maximum throughput | Minimum latency
+╔═══════════════════════════════════════════════════════════╗
+║         WireGuard VPN Script - Performance Mode           ║
+║          https://github.com/hwdsl2/wireguard-install      ║
+╚═══════════════════════════════════════════════════════════╝
 EOF
 }
 
 show_header2() {
 cat <<'EOF'
 
-Welcome to this WireGuard server installer!
-GitHub: https://github.com/hwdsl2/wireguard-install   
+╔═══════════════════════════════════════════════════════════╗
+║         Welcome to the WireGuard Server Installer         ║
+║          https://github.com/hwdsl2/wireguard-install      ║
+╚═══════════════════════════════════════════════════════════╝
 
-PERFORMANCE MODE ENABLED: Auto-optimizing MTU, kernel buffers, and TCP settings
+  Performance Mode: Auto-optimizing MTU, kernel buffers, and
+  TCP settings for maximum throughput and minimum latency.
 EOF
 }
 
 show_header3() {
 cat <<'EOF'
 
-Copyright (c) 2022-2025 Lin Song
-Copyright (c) 2020-2023 Nyr
-Performance optimizations added for low-latency/high-throughput
+  Copyright (c) 2022-2025 Lin Song
+  Copyright (c) 2020-2023 Nyr
+  Performance optimizations for low-latency/high-throughput
 EOF
 }
 
 show_usage() {
 	if [ -n "$1" ]; then
-		echo "Error: $1" >&2
+		echo ""
+		echo "  ✗ Error: $1" >&2
 	fi
 	show_header
 	show_header3
 cat 1>&2 <<EOF
 
-Usage: sh $0 [options]
+  Usage: sh $0 [options]
 
-Options:
+  Client Management:
+    --addclient [name]      Add a new client
+    --listclients           List existing clients
+    --removeclient [name]   Remove an existing client
+    --showclientqr [name]   Show QR code for a client
 
-  --addclient [client name]      add a new client
-  --dns1 [DNS server IP]         primary DNS server for new client (optional, default: Cloudflare DNS)
-  --dns2 [DNS server IP]         secondary DNS server for new client (optional)
-  --listclients                  list the names of existing clients
-  --removeclient [client name]   remove an existing client
-  --showclientqr [client name]   show QR code for an existing client
-  --uninstall                    remove WireGuard and delete all configuration
-  -y, --yes                      assume "yes" as answer to prompts when removing a client or removing WireGuard
-  -h, --help                     show this help message and exit
+  Installation:
+    --auto                  Auto-install with default/custom options
+    --serveraddr [address]  Server DNS name or IPv4 address
+    --port [number]         WireGuard port (1-65535, default: 443)
+    --clientname [name]     First client name (default: client)
+    --dns1 [IP]             Primary DNS (default: Cloudflare)
+    --dns2 [IP]             Secondary DNS (optional)
 
-Install options (optional):
+  Other:
+    --uninstall             Remove WireGuard and all configuration
+    -y, --yes               Assume "yes" to prompts
+    -h, --help              Show this help message
 
-  --auto                         auto install WireGuard using default or custom options
-  --serveraddr [DNS name or IP]  server address, must be a fully qualified domain name (FQDN) or an IPv4 address
-  --port [number]                port for WireGuard (1-65535, default: 443)
-  --clientname [client name]     name for the first WireGuard client (default: client)
-  --dns1 [DNS server IP]         primary DNS server for first client (default: Cloudflare DNS)
-  --dns2 [DNS server IP]         secondary DNS server for first client
-
-To customize options, you may also run this script without arguments.
+  Run without arguments for interactive setup.
 EOF
 	exit 1
 }
@@ -1448,32 +1451,46 @@ except Exception as e:
 
 finish_setup() {
 	echo ""
+	echo "═══════════════════════════════════════════════════════════"
 	if ! modprobe -nq wireguard 2>/dev/null && ! hash wg-quick 2>/dev/null; then
-		echo "Warning!"
-		echo "Installation was finished, but the WireGuard kernel module could not load."
-		echo "Reboot the system to load the most recent kernel."
+		echo "  ⚠ Warning"
+		echo "═══════════════════════════════════════════════════════════"
+		echo ""
+		echo "  Installation was finished, but the WireGuard kernel"
+		echo "  module could not load. Reboot the system to load the"
+		echo "  most recent kernel."
 	else
-		echo "Finished! Performance optimizations applied."
-		echo "Kernel Settings: BBR congestion control, maximum socket buffers, low-latency TCP"
-		echo "WireGuard MTU: $wg_mtu (auto-optimized)"
+		echo "  ✓ Installation Complete"
+		echo "═══════════════════════════════════════════════════════════"
+		echo ""
+		echo "  Performance optimizations applied:"
+		echo "    • BBR congestion control enabled"
+		echo "    • Maximum socket buffers configured"
+		echo "    • Low-latency TCP settings applied"
+		echo "    • WireGuard MTU: $wg_mtu (auto-optimized)"
 	fi
 	echo ""
-	echo "The client configuration is available in: $export_dir$client.conf"
-	echo "New clients can be added by running this script again."
+	echo "  Client configuration: $export_dir$client.conf"
+	echo "  Run this script again to add more clients."
+	echo "═══════════════════════════════════════════════════════════"
 }
 
 select_menu_option() {
 	echo ""
-	echo "WireGuard is already installed."
+	echo "═══════════════════════════════════════════════════════════"
+	echo "  WireGuard is already installed"
+	echo "═══════════════════════════════════════════════════════════"
 	echo ""
-	echo "Select an option:"
-	echo "   1) Add a new client"
-	echo "   2) List existing clients"
-	echo "   3) Remove an existing client"
-	echo "   4) Show QR code for a client"
-	echo "   5) Remove WireGuard"
-	echo "   6) Exit"
-	printf "Option: "
+	echo "  Select an option:"
+	echo ""
+	echo "    1) Add a new client"
+	echo "    2) List existing clients"
+	echo "    3) Remove an existing client"
+	echo "    4) Show QR code for a client"
+	echo "    5) Remove WireGuard"
+	echo "    6) Exit"
+	echo ""
+	printf "  Option: "
 	read -r option
 	until echo "$option" | grep -qE '^[1-6]$'; do
 		echo "$option: invalid selection."
