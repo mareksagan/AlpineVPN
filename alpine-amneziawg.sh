@@ -1597,9 +1597,9 @@ net.ipv4.tcp_keepalive_probes = 6
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_low_latency = 1
 
-# Congestion control - BBR with fq_codel for stable throughput
+# Congestion control - BBR with CAKE for stable throughput
 net.ipv4.tcp_congestion_control = bbr
-net.core.default_qdisc = fq_codel
+net.core.default_qdisc = cake
 net.ipv4.tcp_mtu_probing = 1
 
 # Upload stability - prevent speed drops after initial burst
@@ -1663,7 +1663,7 @@ EOF
 	
 	# Only add BBR settings if module loads successfully
 	if modprobe -q tcp_bbr 2>/dev/null && [ "$kver_ok" -eq 1 ] && [ -f /proc/sys/net/ipv4/tcp_congestion_control ]; then
-		echo "net.core.default_qdisc = fq_codel" >> "$conf_opt"
+		echo "net.core.default_qdisc = cake" >> "$conf_opt"
 		echo "net.ipv4.tcp_congestion_control = bbr" >> "$conf_opt"
 		echo "net.ipv4.tcp_slow_start_after_idle = 0" >> "$conf_opt"
 	fi
@@ -1685,6 +1685,7 @@ EOF
 	# Distribute network interrupts across all CPUs for better performance
 	if [ "$os" = "alpine" ]; then
 		alpine_optimize_multicore_net
+		alpine_tune_interfaces
 	fi
 }
 
@@ -1746,6 +1747,49 @@ alpine_optimize_multicore_net() {
 	# Anti-DPI: Set default TTL to common value (64) to blend in
 	# This masks the hop count fingerprint
 	echo 64 > /proc/sys/net/ipv4/ip_default_ttl 2>/dev/null || true
+}
+
+# Alpine Linux specific: Per-interface tuning for stable uploads
+alpine_tune_interfaces() {
+	_default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+	[ -z "$_default_iface" ] && return
+	
+	echo "Tuning network interfaces for stable VPN performance..."
+	
+	# Disable offloading features for better VPN performance
+	ethtool -K "$_default_iface" tso off gso off gro off lro off 2>/dev/null || true
+	ethtool -K "$_default_iface" tx-checksum-ip-generic off 2>/dev/null || true
+	
+	# Set moderate queue length (prevent bufferbloat while maintaining throughput)
+	ip link set dev "$_default_iface" txqueuelen 1000 2>/dev/null || true
+	
+	# Apply same settings to WireGuard interface when created
+	if ip link show wg0 >/dev/null 2>&1; then
+		ip link set dev wg0 txqueuelen 1000 2>/dev/null || true
+	fi
+	if ip link show awg0 >/dev/null 2>&1; then
+		ip link set dev awg0 txqueuelen 1000 2>/dev/null || true
+	fi
+	
+	# Try to load and use CAKE (best AQM for variable connections)
+	if modprobe sch_cake 2>/dev/null; then
+		echo "CAKE scheduler loaded successfully"
+		# Apply CAKE to external interface (bandwidth-agnostic mode)
+		tc qdisc replace dev "$_default_iface" root cake bandwidth unlimited 2>/dev/null || \
+			tc qdisc replace dev "$_default_iface" root fq_codel 2>/dev/null || true
+	else
+		echo "CAKE not available, using fq_codel"
+		# Fallback to fq_codel
+		tc qdisc replace dev "$_default_iface" root fq_codel 2>/dev/null || true
+	fi
+	
+	# Apply to WireGuard interfaces as well
+	if ip link show wg0 >/dev/null 2>&1; then
+		tc qdisc replace dev wg0 root fq_codel 2>/dev/null || true
+	fi
+	if ip link show awg0 >/dev/null 2>&1; then
+		tc qdisc replace dev awg0 root fq_codel 2>/dev/null || true
+	fi
 }
 
 update_rclocal() {

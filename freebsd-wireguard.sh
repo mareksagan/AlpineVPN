@@ -223,6 +223,10 @@ net.inet.tcp.cc.abe=1
 # Prevents burst-induced drops that cause speed oscillations
 net.inet.tcp.pacing=1
 
+# AQM/ECN settings for PIE-like behavior
+net.inet.tcp.ecn.enable=1
+net.inet.tcp.ecn.negotiate_incoming=1
+
 # Network interrupt tuning
 net.route.netisr_maxqlen=2048
 
@@ -319,17 +323,58 @@ EOF
     # Configure loader.conf tunables for next boot (FreeBSD-specific)
     configure_loader_tunables
     
-    # Apply CoDel (fq_codel) for anti-bufferbloat and stable uploads
-    echo "  Applying CoDel queue discipline for stable uploads..."
+    # Apply queue management for anti-bufferbloat and stable uploads
+    echo "  Applying queue management for stable uploads..."
+    
+    # Get external interface
     _ext_if=$(route -n get 0.0.0.0 2>/dev/null | grep interface | awk '{print $2}')
+    
     if [ -n "$_ext_if" ]; then
-        # Enable CoDel on external interface (prevents bufferbloat)
-        ifconfig "$_ext_if" txcoalesce 0 2>/dev/null || true
-        # Set moderate queue length to prevent bufferbloat while maintaining throughput
+        echo "    Tuning $_ext_if..."
+        
+        # Disable interrupt coalescing (reduces latency/jitter)
+        ifconfig "$_ext_if" -txcoalesce 2>/dev/null || true
+        
+        # Moderate queue length (prevents bufferbloat while maintaining throughput)
         ifconfig "$_ext_if" txqueuelen 1000 2>/dev/null || true
+        
+        # Disable TSO/LRO for lower latency (VPN performs better without offloading)
+        ifconfig "$_ext_if" -tso -lro 2>/dev/null || true
+        
+        # Set moderate RX queue
+        ifconfig "$_ext_if" rxqueuelen 1000 2>/dev/null || true
     fi
-    # Enable CoDel on WireGuard interface
-    ifconfig wg0 txqueuelen 1000 2>/dev/null || true
+    
+    # Tune WireGuard interface
+    if ifconfig wg0 >/dev/null 2>&1; then
+        echo "    Tuning wg0..."
+        ifconfig wg0 txqueuelen 1000 2>/dev/null || true
+        ifconfig wg0 rxqueuelen 1000 2>/dev/null || true
+    fi
+    
+    # Multi-core IRQ affinity (distribute interrupts across CPUs)
+    _cpu_count=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
+    if [ "$_cpu_count" -gt 1 ] && [ -n "$_ext_if" ]; then
+        echo "    Applying multi-core IRQ affinity ($_cpu_count CPUs)..."
+        
+        # Find IRQs for the network interface
+        _irq_list=$(pciconf -lv 2>/dev/null | grep -A5 "$_ext_if" | grep "irq" | head -5)
+        if [ -z "$_irq_list" ]; then
+            # Alternative: try to find via vmstat -i
+            _irq_nums=$(vmstat -i 2>/dev/null | grep -i "$_ext_if" | awk '{print $1}' | head -4)
+        fi
+        
+        # Distribute IRQs across CPUs (round-robin)
+        _cpu=0
+        echo "$_irq_nums" | while read -r _irq; do
+            if [ -n "$_irq" ] && [ -e "/proc/irq/$_irq/smp_affinity" ]; then
+                # Calculate mask for specific CPU
+                _mask=$(printf '%x' $((1 << _cpu)))
+                echo "$_mask" > /proc/irq/$_irq/smp_affinity 2>/dev/null || true
+                _cpu=$(( (_cpu + 1) % _cpu_count ))
+            fi
+        done
+    fi
     
     echo "  ✓ Kernel optimizations applied"
 }
