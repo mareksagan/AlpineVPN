@@ -29,6 +29,18 @@ sanitize_key() {
     printf '%s' "$1" | tr -d '[:space:]'
 }
 
+# Get export directory for client configs (home directory for easy SCP access)
+# Sets global variable: export_dir
+get_export_dir() {
+    export_dir="${HOME}/"
+    if [ -n "${SUDO_USER:-}" ] && getent group "$SUDO_USER" >/dev/null 2>&1; then
+        _user_home_dir=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+        if [ -d "$_user_home_dir" ] && [ "$_user_home_dir" != "/" ]; then
+            export_dir="$_user_home_dir/"
+        fi
+    fi
+}
+
 atomic_write() {
     _file="$1"
     _tmpfile="${_file}.tmp.$$"
@@ -141,9 +153,29 @@ calculate_mtu() {
 configure_sysctl() {
     echo ""
     echo "  Optimizing kernel for maximum WireGuard performance..."
-    mkdir -p /etc/sysctl.d
     
-    cat > /etc/sysctl.d/99-wireguard.conf << 'EOF'
+    # FreeBSD uses /etc/sysctl.conf, not /etc/sysctl.d/
+    _sysctl_conf="/etc/sysctl.conf"
+    
+    # Check if already configured to avoid duplicates
+    if grep -q "# WireGuard Performance Settings" "$_sysctl_conf" 2>/dev/null; then
+        echo "  Sysctl settings already configured, reapplying..."
+    fi
+    
+    # Remove old settings if they exist (for clean reinstall)
+    if [ -f "$_sysctl_conf" ]; then
+        sed_inplace '/# WireGuard Performance Settings/d' "$_sysctl_conf"
+        sed_inplace '/^net.inet.ip.forwarding=1/d' "$_sysctl_conf"
+        sed_inplace '/^net.inet6.ip6.forwarding=1/d' "$_sysctl_conf"
+        sed_inplace '/^kern.ipc.maxsockbuf=/d' "$_sysctl_conf"
+        sed_inplace '/^net.inet.tcp.sendbuf_max=/d' "$_sysctl_conf"
+        sed_inplace '/^net.inet.tcp.recvbuf_max=/d' "$_sysctl_conf"
+        sed_inplace '/^net.inet.udp.recvspace=/d' "$_sysctl_conf"
+        sed_inplace '/^net.link.ifqmaxlen=/d' "$_sysctl_conf"
+    fi
+    
+    cat >> "$_sysctl_conf" << 'EOF'
+# WireGuard Performance Settings
 # Core forwarding
 net.inet.ip.forwarding=1
 net.inet6.ip6.forwarding=1
@@ -269,21 +301,31 @@ net.inet.ip.redirect=0
 net.inet.ip.portrange.randomized=1
 EOF
 
-    sysctl -f /etc/sysctl.d/99-wireguard.conf >/dev/null 2>&1 || true
+    # Apply settings immediately
+    sysctl net.inet.ip.forwarding=1 >/dev/null 2>&1 || true
+    sysctl net.inet6.ip6.forwarding=1 >/dev/null 2>&1 || true
+    sysctl kern.ipc.maxsockbuf=134217728 >/dev/null 2>&1 || true
+    sysctl net.inet.tcp.sendbuf_max=134217728 >/dev/null 2>&1 || true
+    sysctl net.inet.tcp.recvbuf_max=134217728 >/dev/null 2>&1 || true
+    sysctl net.inet.udp.recvspace=2097152 >/dev/null 2>&1 || true
+    sysctl net.link.ifqmaxlen=2048 >/dev/null 2>&1 || true
+    
+    # Enable gateway mode
     sysrc -f /etc/rc.conf gateway_enable="YES" >/dev/null
-    sysctl net.inet.ip.forwarding=1 >/dev/null
     
     # Configure loader.conf tunables for next boot (FreeBSD-specific)
     configure_loader_tunables
+    
+    echo "  ✓ Kernel optimizations applied"
 }
 
 # FreeBSD loader.conf tunables (require reboot)
 configure_loader_tunables() {
     _loader_conf="/boot/loader.conf"
     
-    # Backup original if not already backed up
-    if [ ! -f "$BACKUP_DIR/loader.conf.backup" ] && [ -f "$_loader_conf" ]; then
-        cp "$_loader_conf" "$BACKUP_DIR/loader.conf.backup" 2>/dev/null || true
+    # Check if already configured to avoid duplicates
+    if grep -q "# WireGuard Performance Tunables" "$_loader_conf" 2>/dev/null; then
+        return
     fi
     
     # Add performance tunables to loader.conf
@@ -306,9 +348,6 @@ hw.em.msix="1"
 # Realtek NIC optimizations (if applicable)
 hw.re.rxd="4096"
 hw.re.txd="4096"
-
-# Disable Spectre/Meltdown mitigations for performance (optional, security risk)
-# hw.ibrs_disable="1"
 
 # TCP segmentation offload support
 device="tso"
@@ -369,7 +408,11 @@ configure_firewall() {
     _ext_if="$1"
     _wg_port="$2"
     
-    [ -f "$PF_CONF" ] && cp "$PF_CONF" "$BACKUP_DIR/pf.conf.backup" 2>/dev/null || mkdir -p "$BACKUP_DIR"
+    # Backup PF config to a persistent location if not already backed up
+    if [ -f "$PF_CONF" ] && [ ! -f "/var/backups/wireguard-pf.conf.backup" ]; then
+        mkdir -p /var/backups
+        cp "$PF_CONF" "/var/backups/wireguard-pf.conf.backup"
+    fi
     
     cat > "$PF_CONF" << EOF
 set skip on lo0
@@ -510,11 +553,9 @@ AllowedIPs = 10.7.0.$_octet/32
 # END_PEER $_client
 EOF
     
-    # Create client config directory
-    _export_dir="${WG_DIR}/clients"
-    mkdir -p "$_export_dir"
-    chmod 700 "$_export_dir"
-    _client_file="$_export_dir/$_client.conf"
+    # Create client config in home directory for easy SCP access
+    get_export_dir
+    _client_file="$export_dir$_client.conf"
     
     # Anti-DPI: Randomize keepalive interval (20-30 seconds) to avoid pattern detection
     _keepalive=$((20 + ($(date +%s) % 11)))
@@ -588,8 +629,9 @@ remove_client() {
                 wg set wg0 peer "$_peer_key" remove 2>/dev/null || true
             fi
             sed_inplace "/^# BEGIN_PEER $_client/,/^# END_PEER $_client/d" "$WG_DIR/wg0.conf"
-            rm -f "$WG_DIR/clients/$_client.conf"
-            echo "Removed"
+            get_export_dir
+            rm -f "${export_dir}${_client}.conf"
+            echo "  Removed"
             ;;
     esac
 }
@@ -599,16 +641,56 @@ uninstall_wireguard() {
     read -r _confirm
     case "$_confirm" in
         [yY])
+            echo ""
+            echo "  Stopping WireGuard..."
             service wireguard stop 2>/dev/null || ifconfig wg0 destroy 2>/dev/null || true
+            
+            echo "  Removing rc.conf settings..."
             sysrc -x wireguard_enable 2>/dev/null || true
             sysrc -x wireguard_interfaces 2>/dev/null || true
+            sysrc -x gateway_enable 2>/dev/null || true
+            sysrc -x pf_enable 2>/dev/null || true
             
-            if [ -f "$BACKUP_DIR/pf.conf.backup" ]; then
-                mv "$BACKUP_DIR/pf.conf.backup" "$PF_CONF"
+            echo "  Restoring PF configuration..."
+            if [ -f "/var/backups/wireguard-pf.conf.backup" ]; then
+                cp "/var/backups/wireguard-pf.conf.backup" "$PF_CONF"
                 service pf reload 2>/dev/null || true
+                rm -f "/var/backups/wireguard-pf.conf.backup"
             fi
             
-            rm -rf "$WG_DIR" /etc/sysctl.d/99-wireguard.conf
+            echo "  Cleaning up loader.conf entries..."
+            _loader_conf="/boot/loader.conf"
+            if [ -f "$_loader_conf" ]; then
+                # Remove WireGuard-specific entries we added
+                sed_inplace '/# WireGuard Performance Tunables/d' "$_loader_conf"
+                sed_inplace '/^kern.ipc.nmbclusters=/d' "$_loader_conf"
+                sed_inplace '/^kern.ipc.nmbjumbop=/d' "$_loader_conf"
+                sed_inplace '/^kern.ipc.nmbjumbo=/d' "$_loader_conf"
+                sed_inplace '/^net.link.ifqmaxlen=/d' "$_loader_conf"
+                sed_inplace '/^hw.em.rxd=/d' "$_loader_conf"
+                sed_inplace '/^hw.em.txd=/d' "$_loader_conf"
+                sed_inplace '/^hw.em.msix=/d' "$_loader_conf"
+                sed_inplace '/^hw.re.rxd=/d' "$_loader_conf"
+                sed_inplace '/^hw.re.txd=/d' "$_loader_conf"
+                sed_inplace '/^device="tso"/d' "$_loader_conf"
+                sed_inplace '/^if_wg_load=/d' "$_loader_conf"
+            fi
+            
+            echo "  Cleaning up sysctl settings..."
+            _sysctl_conf="/etc/sysctl.conf"
+            if [ -f "$_sysctl_conf" ]; then
+                sed_inplace '/# WireGuard Performance Settings/d' "$_sysctl_conf"
+                sed_inplace '/^net.inet.ip.forwarding=1/d' "$_sysctl_conf"
+                sed_inplace '/^net.inet6.ip6.forwarding=1/d' "$_sysctl_conf"
+                sed_inplace '/^kern.ipc.maxsockbuf=/d' "$_sysctl_conf"
+                sed_inplace '/^net.inet.tcp.sendbuf_max=/d' "$_sysctl_conf"
+                sed_inplace '/^net.inet.tcp.recvbuf_max=/d' "$_sysctl_conf"
+                sed_inplace '/^net.inet.udp.recvspace=/d' "$_sysctl_conf"
+                sed_inplace '/^net.link.ifqmaxlen=/d' "$_sysctl_conf"
+            fi
+            rm -rf "$WG_DIR"
+            
+            echo "  ⚠ Note: Loader.conf changes require a reboot to fully take effect."
             echo ""
             echo "  ✓ WireGuard uninstalled"
             ;;
@@ -649,10 +731,11 @@ menu() {
             4)
                 printf "Client: "; read -r _name
                 _c=$(printf '%s' "$_name" | sed 's/[^a-zA-Z0-9_-]/_/g' | cut -c-15)
-                if [ -f "$WG_DIR/clients/$_c.conf" ]; then
-                    show_qr_code "$WG_DIR/clients/$_c.conf"
+                get_export_dir
+                if [ -f "${export_dir}${_c}.conf" ]; then
+                    show_qr_code "${export_dir}${_c}.conf"
                 else
-                    echo "Not found"
+                    echo "  Config file not found: ${export_dir}${_c}.conf"
                 fi
                 ;;
             5) show_status ;;
@@ -701,7 +784,7 @@ main() {
     
     echo "Note: Port 443 (HTTPS) is recommended to blend in against DPI"
     printf "Port [443]: "; read -r _wg_port
-    _wg_port=${_wg_port:-51820}
+    _wg_port=${_wg_port:-443}
     case "$_wg_port" in
         ''|*[!0-9]*) exiterr "Invalid port" ;;
         *) [ "$_wg_port" -gt 65535 ] && exiterr "Invalid port" ;;
@@ -727,13 +810,14 @@ main() {
     start_wireguard "$_wg_port"
     add_client "$_first_client"
     
+    get_export_dir
     echo ""
     echo "═══════════════════════════════════════════════════════════"
     echo "  ✓ Installation Complete"
     echo "═══════════════════════════════════════════════════════════"
     echo ""
     echo "  Server: ${_public_ip}:${_wg_port}"
-    echo "  Client: $WG_DIR/clients/$_first_client.conf"
+    echo "  Client: ${export_dir}${_first_client}.conf"
     echo "═══════════════════════════════════════════════════════════"
 }
 
