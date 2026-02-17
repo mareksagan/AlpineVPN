@@ -848,6 +848,9 @@ EOF
 
 create_firewall_rules() {
 	if [ "$os" = "alpine" ]; then
+		# Get default interface for anti-DPI rules
+		_default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+		
 		cat > /etc/init.d/wg-iptables <<EOF
 #!/sbin/openrc-run
 
@@ -860,10 +863,25 @@ depend() {
 
 start() {
     ebegin "Adding WireGuard iptables rules"
+    
+    # Basic NAT and forwarding
     iptables -t nat -A POSTROUTING -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j MASQUERADE
     iptables -I INPUT -p udp --dport $port -j ACCEPT
     iptables -I FORWARD -s 10.7.0.0/24 -j ACCEPT
     iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+    
+    # Anti-DPI: TTL normalization (hide hop count)
+    iptables -t mangle -A POSTROUTING -o $_default_iface -j TTL --ttl-set 64 2>/dev/null || true
+    
+    # Anti-DPI: TCP MSS clamping (normalize packet sizes)
+    iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1300 2>/dev/null || true
+    
+    # Anti-DPI: Block TCP timestamps in outgoing packets (fingerprint hiding)
+    iptables -t mangle -A POSTROUTING -p tcp --tcp-option 8 -j DROP 2>/dev/null || true
+    
+    # Anti-DPI: Randomize source ports for UDP (WireGuard)
+    iptables -t nat -A POSTROUTING -p udp --sport $port -j MASQUERADE --random 2>/dev/null || true
+    
     eend \$?
 }
 
@@ -873,6 +891,10 @@ stop() {
     iptables -D INPUT -p udp --dport $port -j ACCEPT
     iptables -D FORWARD -s 10.7.0.0/24 -j ACCEPT
     iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -t mangle -D POSTROUTING -o $_default_iface -j TTL --ttl-set 64 2>/dev/null || true
+    iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1300 2>/dev/null || true
+    iptables -t mangle -D POSTROUTING -p tcp --tcp-option 8 -j DROP 2>/dev/null || true
+    iptables -t nat -D POSTROUTING -p udp --sport $port -j MASQUERADE --random 2>/dev/null || true
     eend \$?
 }
 EOF
@@ -905,6 +927,7 @@ EOF
 			iptables_path=$(command -v iptables-legacy)
 			ip6tables_path=$(command -v ip6tables-legacy)
 		fi
+		_default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
 		cat > /etc/systemd/system/wg-iptables.service << EOF
 [Unit]
 After=network-online.target
@@ -915,10 +938,18 @@ ExecStart=$iptables_path -w 5 -t nat -A POSTROUTING -s 10.7.0.0/24 ! -d 10.7.0.0
 ExecStart=$iptables_path -w 5 -I INPUT -p udp --dport $port -j ACCEPT
 ExecStart=$iptables_path -w 5 -I FORWARD -s 10.7.0.0/24 -j ACCEPT
 ExecStart=$iptables_path -w 5 -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+ExecStart=$iptables_path -w 5 -t mangle -A POSTROUTING -o $_default_iface -j TTL --ttl-set 64
+ExecStart=$iptables_path -w 5 -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1300
+ExecStart=$iptables_path -w 5 -t mangle -A POSTROUTING -p tcp --tcp-option 8 -j DROP
+ExecStart=$iptables_path -w 5 -t nat -A POSTROUTING -p udp --sport $port -j MASQUERADE --random
 ExecStop=$iptables_path -w 5 -t nat -D POSTROUTING -s 10.7.0.0/24 ! -d 10.7.0.0/24 -j MASQUERADE
 ExecStop=$iptables_path -w 5 -D INPUT -p udp --dport $port -j ACCEPT
 ExecStop=$iptables_path -w 5 -D FORWARD -s 10.7.0.0/24 -j ACCEPT
 ExecStop=$iptables_path -w 5 -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+ExecStop=$iptables_path -w 5 -t mangle -D POSTROUTING -o $_default_iface -j TTL --ttl-set 64
+ExecStop=$iptables_path -w 5 -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1300
+ExecStop=$iptables_path -w 5 -t mangle -D POSTROUTING -p tcp --tcp-option 8 -j DROP
+ExecStop=$iptables_path -w 5 -t nat -D POSTROUTING -p udp --sport $port -j MASQUERADE --random
 EOF
 		if [ -n "$ip6" ]; then
 			cat >> /etc/systemd/system/wg-iptables.service << EOF
@@ -1221,6 +1252,63 @@ net.ipv4.ip_local_reserved_ports =
 # Anti-DPI: Disable TCP metrics cache (prevents fingerprinting based on history)
 net.ipv4.tcp_no_metrics_save = 1
 
+# Anti-DPI: SYN cookies (prevent SYN flood detection/probing)
+net.ipv4.tcp_syncookies = 1
+
+# Anti-DPI: Disable TCP timestamps to prevent OS fingerprinting
+net.ipv4.tcp_timestamps = 0
+
+# Anti-DPI: Enable SACK (normalized behavior)
+net.ipv4.tcp_sack = 1
+
+# Anti-DPI: Enable window scaling (normalized behavior)
+net.ipv4.tcp_window_scaling = 1
+
+# Anti-DPI: Protect against TIME_WAIT assassination
+net.ipv4.tcp_rfc1337 = 1
+
+# Anti-DPI: Don't accept ICMP redirects (prevent MITM/fingerprinting)
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+
+# Anti-DPI: Don't send ICMP redirects
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+
+# Anti-DPI: Disable source routing
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+
+# Anti-DPI: Enable reverse path filtering (prevent IP spoofing)
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+
+# Anti-DPI: Disable log martians (don't reveal dropped packets)
+net.ipv4.conf.all.log_martians = 0
+net.ipv4.conf.default.log_martians = 0
+
+# Anti-DPI: Restrict kernel message access (hide system info)
+kernel.dmesg_restrict = 1
+
+# Anti-DPI: Restrict kernel pointers in /proc
+kernel.kptr_restrict = 2
+
+# Anti-DPI: Hide processes from other users
+fs.protected_symlinks = 1
+fs.protected_hardlinks = 1
+
+# Anti-DPI: Connection tracking limits (prevent resource exhaustion)
+net.netfilter.nf_conntrack_max = 2000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+net.netfilter.nf_conntrack_udp_timeout = 30
+net.netfilter.nf_conntrack_udp_timeout_stream = 60
+
+# Anti-DPI: IPv6 privacy extensions (if IPv6 is used)
+net.ipv6.conf.all.use_tempaddr = 2
+net.ipv6.conf.default.use_tempaddr = 2
+
 # Anti-DPI: Increase TTL slightly to mask hop count fingerprinting
 # (Set at runtime by function)
 EOF
@@ -1345,6 +1433,9 @@ alpine_tune_interfaces() {
 		ip link set dev wg0 txqueuelen 1000 2>/dev/null || true
 	fi
 	
+	# Apply anti-DPI iptables rules
+	apply_anti_dpi_rules
+	
 	# Try to load and use CAKE (best AQM for variable connections)
 	if modprobe sch_cake 2>/dev/null; then
 		echo "CAKE scheduler loaded successfully"
@@ -1361,6 +1452,32 @@ alpine_tune_interfaces() {
 	if ip link show wg0 >/dev/null 2>&1; then
 		tc qdisc replace dev wg0 root fq_codel 2>/dev/null || true
 	fi
+}
+
+# Apply anti-DPI iptables rules immediately
+apply_anti_dpi_rules() {
+	_default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+	[ -z "$_default_iface" ] && return
+	
+	echo "Applying anti-DPI iptables rules..."
+	
+	# Anti-DPI: TTL normalization (hide hop count)
+	iptables -t mangle -C POSTROUTING -o "$_default_iface" -j TTL --ttl-set 64 2>/dev/null || \
+		iptables -t mangle -A POSTROUTING -o "$_default_iface" -j TTL --ttl-set 64 2>/dev/null || true
+	
+	# Anti-DPI: TCP MSS clamping (normalize packet sizes)
+	iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1300 2>/dev/null || \
+		iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1300 2>/dev/null || true
+	
+	# Anti-DPI: Block TCP timestamps (fingerprint hiding)
+	iptables -t mangle -C POSTROUTING -p tcp --tcp-option 8 -j DROP 2>/dev/null || \
+		iptables -t mangle -A POSTROUTING -p tcp --tcp-option 8 -j DROP 2>/dev/null || true
+	
+	# Anti-DPI: Randomize source ports for outgoing connections
+	iptables -t nat -C POSTROUTING -o "$_default_iface" -j MASQUERADE --random 2>/dev/null || \
+		iptables -t nat -A POSTROUTING -o "$_default_iface" -j MASQUERADE --random 2>/dev/null || true
+	
+	echo "Anti-DPI rules applied"
 }
 
 update_rclocal() {

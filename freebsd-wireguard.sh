@@ -306,6 +306,39 @@ net.inet.ip.redirect=0
 
 # Anti-DPI: Randomize port allocation (already enabled above, reinforced here)
 net.inet.ip.portrange.randomized=1
+
+# Anti-DPI: SYN cookies (prevent SYN flood detection/probing)
+net.inet.tcp.syncookies=1
+
+# Anti-DPI: Drop packets to closed ports silently (don't reveal OS)
+net.inet.tcp.blackhole=2
+net.inet.udp.blackhole=1
+
+# Anti-DPI: Drop SYN+FIN packets (some DPI uses these for probing)
+net.inet.tcp.drop_synfin=1
+
+# Anti-DPI: Disable path MTU discovery (prevents MTU-based fingerprinting)
+net.inet.ip.mtudisc=0
+net.inet.tcp.path_mtu_discovery=0
+
+# Anti-DPI: Don't accept source routed packets
+net.inet.ip.accept_sourceroute=0
+net.inet.ip6.accept_sourceroute=0
+
+# Anti-DPI: Enable reverse path filtering (prevent IP spoofing)
+net.inet.ip.check_interface=1
+
+# Anti-DPI: Disable ICMP echo broadcasts (smurf attack prevention)
+net.inet.icmp.bmcastecho=0
+
+# Anti-DPI: Hide processes from other users
+kern.ps_showallprocs=0
+
+# Anti-DPI: Randomize process IDs
+kern.randompid=1
+
+# Anti-DPI: Disable process debugging
+kern.unprivileged_proc_debug=0
 EOF
 
     # Apply settings immediately
@@ -316,6 +349,21 @@ EOF
     sysctl net.inet.tcp.recvbuf_max=134217728 >/dev/null 2>&1 || true
     sysctl net.inet.udp.recvspace=2097152 >/dev/null 2>&1 || true
     sysctl net.link.ifqmaxlen=2048 >/dev/null 2>&1 || true
+    
+    # Apply anti-DPI sysctls immediately
+    sysctl net.inet.tcp.syncookies=1 >/dev/null 2>&1 || true
+    sysctl net.inet.tcp.blackhole=2 >/dev/null 2>&1 || true
+    sysctl net.inet.udp.blackhole=1 >/dev/null 2>&1 || true
+    sysctl net.inet.tcp.drop_synfin=1 >/dev/null 2>&1 || true
+    sysctl net.inet.ip.mtudisc=0 >/dev/null 2>&1 || true
+    sysctl net.inet.tcp.path_mtu_discovery=0 >/dev/null 2>&1 || true
+    sysctl net.inet.ip.accept_sourceroute=0 >/dev/null 2>&1 || true
+    sysctl net.inet.ip6.accept_sourceroute=0 >/dev/null 2>&1 || true
+    sysctl net.inet.ip.check_interface=1 >/dev/null 2>&1 || true
+    sysctl net.inet.icmp.bmcastecho=0 >/dev/null 2>&1 || true
+    sysctl kern.ps_showallprocs=0 >/dev/null 2>&1 || true
+    sysctl kern.randompid=1 >/dev/null 2>&1 || true
+    sysctl kern.unprivileged_proc_debug=0 >/dev/null 2>&1 || true
     
     # Enable gateway mode
     sysrc -f /etc/rc.conf gateway_enable="YES" >/dev/null
@@ -477,15 +525,41 @@ configure_firewall() {
     cat > "$PF_CONF" << EOF
 set skip on lo0
 set limit states 500000
-scrub in on $_ext_if all fragment reassemble max-mss 1420
-nat on $_ext_if inet from 10.7.0.0/24 to any -> ($_ext_if) static-port
+
+# Anti-DPI: Normalize incoming packets (reassemble fragments, clamp MSS)
+scrub in on $_ext_if all fragment reassemble max-mss 1300
+
+# Anti-DPI: Normalize outgoing packets (randomize IP ID, set min TTL)
+scrub out on $_ext_if all random-id min-ttl 64
+
+# Anti-DPI: Block packets with IP options (fingerprinting vector)
+block in quick on $_ext_if from any to any ip options lsrr
+block in quick on $_ext_if from any to any ip options ssrr
+
+# NAT with random source ports (anti-DPI: --random equivalent)
+nat on $_ext_if inet from 10.7.0.0/24 to any -> ($_ext_if) port 1024:65535
+
+# Allow SSH access
 pass in quick on $_ext_if proto tcp from any to any port 22 keep state
+
+# Allow WireGuard
 pass in quick on $_ext_if proto udp from any to any port $_wg_port keep state
+
+# Allow all WireGuard traffic
 pass quick on wg0 all
+
+# Allow outbound traffic from VPN clients
 pass out quick on $_ext_if inet from 10.7.0.0/24 to any keep state
+
+# Block private networks from outside
 block in quick on $_ext_if from 10.0.0.0/8 to any
 block in quick on $_ext_if from 172.16.0.0/12 to any
 block in quick on $_ext_if from 192.168.0.0/16 to any
+
+# Anti-DPI: Block packets with suspicious TCP flag combinations
+block in quick on $_ext_if proto tcp flags FPU/FSRPAU
+block in quick on $_ext_if proto tcp flags /SFRAU
+block in quick on $_ext_if proto tcp flags F/SFRAU
 EOF
 
     pfctl -nf "$PF_CONF" || exiterr "PF config error"
@@ -497,6 +571,40 @@ EOF
     
     sysrc pf_enable="YES"
     service pf start >/dev/null 2>&1 || service pf reload >/dev/null 2>&1 || exiterr "PF failed"
+    
+    # Configure dummynet for traffic shaping (anti-DPI: add jitter)
+    configure_dummynet "$_ext_if"
+}
+
+# Configure dummynet for anti-DPI traffic shaping
+configure_dummynet() {
+    _iface="$1"
+    [ -z "$_iface" ] && return
+    
+    echo "  Configuring dummynet traffic shaping..."
+    
+    # Load dummynet module
+    if ! kldstat -q -m dummynet; then
+        kldload dummynet 2>/dev/null || {
+            echo "    Warning: Could not load dummynet module"
+            return
+        }
+    fi
+    
+    # Flush existing rules
+    ipfw -q flush 2>/dev/null || true
+    
+    # Create pipe with moderate bandwidth and small delay/jitter
+    # This adds timing jitter to confuse traffic analysis
+    ipfw pipe 1 config bw 100Mbit/s delay 5ms 2>/dev/null || true
+    
+    # Add rule to shape outbound VPN traffic (adds jitter)
+    ipfw -q add 100 pipe 1 ip from 10.7.0.0/24 to any out via "$_iface" 2>/dev/null || true
+    
+    # Enable dummynet in rc.conf
+    sysrc dummynet_enable="YES" >/dev/null 2>&1 || true
+    
+    echo "    Dummynet configured (5ms delay jitter)"
 }
 
 install_packages() {
