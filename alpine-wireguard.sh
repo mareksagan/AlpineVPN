@@ -1162,7 +1162,7 @@ net.core.wmem_default = 262144
 net.core.netdev_max_backlog = 50000
 net.core.somaxconn = 65535
 
-# TCP optimizations for low latency
+# TCP optimizations for low latency and stable uploads
 net.ipv4.tcp_rmem = 4096 87380 134217728
 net.ipv4.tcp_wmem = 4096 65536 134217728
 net.ipv4.tcp_fastopen = 3
@@ -1173,9 +1173,16 @@ net.ipv4.tcp_keepalive_intvl = 10
 net.ipv4.tcp_keepalive_probes = 6
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_low_latency = 1
+
+# Congestion control - BBR with pacing for stable throughput
 net.ipv4.tcp_congestion_control = bbr
-net.core.default_qdisc = fq
+net.core.default_qdisc = fq_codel
 net.ipv4.tcp_mtu_probing = 1
+
+# Upload stability - prevent speed drops
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_pacing_ss_ratio = 200
+net.ipv4.tcp_pacing_ca_ratio = 120
 
 # UDP optimizations for WireGuard
 net.ipv4.udp_rmem_min = 8192
@@ -1233,8 +1240,9 @@ EOF
 	
 	# Only add BBR settings if module loads successfully
 	if modprobe -q tcp_bbr 2>/dev/null && [ "$kver_ok" -eq 1 ] && [ -f /proc/sys/net/ipv4/tcp_congestion_control ]; then
-		echo "net.core.default_qdisc = fq" >> "$conf_opt"
+		echo "net.core.default_qdisc = fq_codel" >> "$conf_opt"
 		echo "net.ipv4.tcp_congestion_control = bbr" >> "$conf_opt"
+		echo "net.ipv4.tcp_slow_start_after_idle = 0" >> "$conf_opt"
 	fi
 	
 	# Apply settings

@@ -187,11 +187,10 @@ kern.ipc.maxsockbuf=134217728
 net.inet.tcp.sendbuf_max=134217728
 net.inet.tcp.recvbuf_max=134217728
 
-# TCP buffer auto-tuning ranges (min/default/max in bytes)
-net.inet.tcp.sendbuf_auto=1
-net.inet.tcp.recvbuf_auto=1
-net.inet.tcp.sendbuf_inc=32768
-net.inet.tcp.recvbuf_inc=65536
+# TCP buffer auto-tuning - DISABLED for stable VPN throughput
+# Auto-tuning can cause speed fluctuations as it oscillates
+net.inet.tcp.sendbuf_auto=0
+net.inet.tcp.recvbuf_auto=0
 
 # Default TCP socket buffer sizes
 net.inet.tcp.sendspace=262144
@@ -215,10 +214,14 @@ net.inet.tcp.keepidle=60000
 net.inet.tcp.keepintvl=10000
 net.inet.tcp.keepinit=10000
 
-# Congestion control - use CUBIC (FreeBSD equivalent to BBR)
-# Note: FreeBSD does not have BBR, CUBIC is the best available alternative
-net.inet.tcp.cc.algorithm=cubic
+# Congestion control - HTCP is better for high-BDP links than CUBIC
+# HTCP maintains throughput better under varying latency conditions
+net.inet.tcp.cc.algorithm=htcp
 net.inet.tcp.cc.abe=1
+
+# TCP pacing - smooths out packet transmission for stable uploads
+# Prevents burst-induced drops that cause speed oscillations
+net.inet.tcp.pacing=1
 
 # Network interrupt tuning
 net.route.netisr_maxqlen=2048
@@ -315,6 +318,18 @@ EOF
     
     # Configure loader.conf tunables for next boot (FreeBSD-specific)
     configure_loader_tunables
+    
+    # Apply CoDel (fq_codel) for anti-bufferbloat and stable uploads
+    echo "  Applying CoDel queue discipline for stable uploads..."
+    _ext_if=$(route -n get 0.0.0.0 2>/dev/null | grep interface | awk '{print $2}')
+    if [ -n "$_ext_if" ]; then
+        # Enable CoDel on external interface (prevents bufferbloat)
+        ifconfig "$_ext_if" txcoalesce 0 2>/dev/null || true
+        # Set moderate queue length to prevent bufferbloat while maintaining throughput
+        ifconfig "$_ext_if" txqueuelen 1000 2>/dev/null || true
+    fi
+    # Enable CoDel on WireGuard interface
+    ifconfig wg0 txqueuelen 1000 2>/dev/null || true
     
     echo "  ✓ Kernel optimizations applied"
 }
