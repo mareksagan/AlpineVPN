@@ -1734,6 +1734,22 @@ net.ipv6.conf.default.use_tempaddr = 2
 
 # Anti-DPI: Increase TTL slightly to mask hop count fingerprinting
 # (Set at runtime by function)
+
+# Anti-DPI: Disable ECN (Explicit Congestion Notification) to prevent DPI fingerprinting
+net.ipv4.tcp_ecn = 0
+
+# Anti-DPI: ARP filtering - don't respond to ARP requests for other hosts
+net.ipv4.conf.all.arp_ignore = 1
+net.ipv4.conf.default.arp_ignore = 1
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.conf.default.arp_announce = 2
+
+# Anti-DPI: ICMP rate limiting - reduce ICMP echo responses to avoid scanning
+net.ipv4.icmp_ratelimit = 100
+net.ipv4.icmp_ratemask = 88089
+
+# Anti-DPI: Disable TCP Fast Open (TFO) to prevent tracking/fingerprinting
+net.ipv4.tcp_fastopen = 0
 EOF
 	
 	# Enable TCP BBR congestion control if kernel version >= 4.20 (BusyBox compatible)
@@ -1881,6 +1897,296 @@ alpine_tune_interfaces() {
 	if ip link show awg0 >/dev/null 2>&1; then
 		tc qdisc replace dev awg0 root fq_codel 2>/dev/null || true
 	fi
+}
+
+# ==================== CATEGORY A: DNS PRIVACY ====================
+
+# A1/A2: Setup DNS over HTTPS or DNS over TLS
+setup_dns_privacy() {
+	echo "Setting up DNS privacy..."
+	
+	# Try to install and configure stubby (DoT) or cloudflared (DoH)
+	if [ "$os" = "alpine" ]; then
+		# For Alpine, use stubby (DNS over TLS)
+		if apk add --no-cache stubby 2>/dev/null; then
+			cat > /etc/stubby/stubby.yml << 'EOF'
+resolution_type: GETDNS_RESOLUTION_STUB
+dns_transport_list:
+  - GETDNS_TRANSPORT_TLS
+tls_authentication: GETDNS_AUTHENTICATION_REQUIRED
+tls_query_padding_blocksize: 128
+edns_client_subnet_private: 1
+round_robin_upstreams: 1
+idle_timeout: 10000
+listen_addresses:
+  - 127.0.0.1@53000
+  - 0::1@53000
+upstream_recursive_servers:
+  - address_data: 1.1.1.1
+    tls_auth_name: "cloudflare-dns.com"
+    tls_pubkey_pinset:
+      - digest: "sha256"
+        value: 4pqQ+yl3lAtRvKdoCCq7lL8Rq0ybhXK7RX/TD8oKOyc=
+  - address_data: 1.0.0.1
+    tls_auth_name: "cloudflare-dns.com"
+    tls_pubkey_pinset:
+      - digest: "sha256"
+        value: 4pqQ+yl3lAtRvKdoCCq7lL8Rq0ybhXK7RX/TD8oKOyc=
+  - address_data: 8.8.8.8
+    tls_auth_name: "dns.google"
+  - address_data: 8.8.4.4
+    tls_auth_name: "dns.google"
+EOF
+			# Update resolv.conf to use stubby
+			echo "nameserver 127.0.0.1" > /etc/resolv.conf
+			echo "options timeout:2 attempts:3" >> /etc/resolv.conf
+			# Start stubby
+			stubby -g 2>/dev/null || true
+			echo "  DNS over TLS configured (stubby on 127.0.0.1)"
+		fi
+	elif [ "$os" = "ubuntu" ] || [ "$os" = "debian" ]; then
+		# For Ubuntu/Debian, try systemd-resolved with DoT
+		if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+			# Configure systemd-resolved for DoT
+			mkdir -p /etc/systemd/resolved.conf.d
+			cat > /etc/systemd/resolved.conf.d/dns-over-tls.conf << 'EOF'
+[Resolve]
+DNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com 8.8.8.8#dns.google 8.8.4.4#dns.google
+DNSOverTLS=yes
+DNSSEC=yes
+FallbackDNS=127.0.0.1
+EOF
+			systemctl restart systemd-resolved 2>/dev/null || true
+			echo "  DNS over TLS configured (systemd-resolved)"
+		fi
+	fi
+}
+
+# A3: Apply DSCP/ToS field zeroing via iptables
+apply_dscp_zeroing() {
+	echo "Applying DSCP field zeroing..."
+	_default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+	[ -z "$_default_iface" ] && return
+	
+	# Zero out DSCP field for all outgoing traffic
+	iptables -t mangle -C POSTROUTING -o "$_default_iface" -j DSCP --set-dscp 0 2>/dev/null || \
+		iptables -t mangle -A POSTROUTING -o "$_default_iface" -j DSCP --set-dscp 0 2>/dev/null || true
+	
+	# Also for IPv6 if available
+	ip6tables -t mangle -C POSTROUTING -o "$_default_iface" -j DSCP --set-dscp 0 2>/dev/null || \
+		ip6tables -t mangle -A POSTROUTING -o "$_default_iface" -j DSCP --set-dscp 0 2>/dev/null || true
+}
+
+# ==================== CATEGORY C: SYSTEM HARDENING ====================
+
+# C3: Randomize MAC address on boot
+randomize_mac() {
+	echo "Configuring MAC address randomization..."
+	_default_iface=$(ip -4 route show default 2>/dev/null | grep "dev" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)
+	[ -z "$_default_iface" ] && return
+	
+	# Generate random MAC
+	_new_mac=$(printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
+	
+	# Apply temporarily (requires interface down/up which may disconnect)
+	# Instead, create a script for next boot
+	cat > /etc/local.d/mac-random.start << EOF
+#!/bin/sh
+# Randomize MAC address on boot
+sleep 5
+ip link set dev $_default_iface down
+ip link set dev $_default_iface address $_new_mac
+ip link set dev $_default_iface up
+EOF
+	chmod +x /etc/local.d/mac-random.start
+	
+	if command -v rc-update >/dev/null 2>&1; then
+		rc-update add local default >/dev/null 2>&1 || true
+	fi
+	echo "  MAC randomization configured for $_default_iface (next boot)"
+}
+
+# C4: Randomize hostname
+randomize_hostname() {
+	echo "Randomizing hostname..."
+	_new_hostname="host-$(openssl rand -hex 4 2>/dev/null || cat /dev/urandom | head -c 8 | od -An -tx1 | tr -d ' ')"
+	echo "$_new_hostname" > /etc/hostname
+	hostname "$_new_hostname" 2>/dev/null || true
+	echo "  Hostname changed to: $_new_hostname"
+}
+
+# C5: Set timezone to UTC (hide location)
+set_utc_timezone() {
+	echo "Setting timezone to UTC..."
+	if [ -f /etc/localtime ]; then
+		cp /usr/share/zoneinfo/UTC /etc/localtime 2>/dev/null || true
+	fi
+	if [ -f /etc/timezone ]; then
+		echo "UTC" > /etc/timezone
+	fi
+	if [ -L /etc/localtime ]; then
+		ln -sf /usr/share/zoneinfo/UTC /etc/localtime 2>/dev/null || true
+	fi
+	# Export for current session
+	export TZ=UTC
+	echo "  Timezone set to UTC"
+}
+
+# C6: Setup NTP privacy (NTS - Network Time Security)
+setup_ntp_privacy() {
+	echo "Setting up NTP privacy..."
+	if [ "$os" = "alpine" ]; then
+		# Alpine uses busybox ntpd or chrony
+		if apk add --no-cache chrony 2>/dev/null; then
+			# Configure chrony with NTS if available
+			cat >> /etc/chrony/chrony.conf << 'EOF'
+# NTS-enabled time servers
+server time.cloudflare.com iburst nts
+server nts.netnod.se iburst nts
+
+# Privacy: don't leak system info
+nocertdata
+nosysdata
+EOF
+			# Disable default ntpd and enable chronyd
+			rc-update add chronyd default 2>/dev/null || true
+			rc-service chronyd restart 2>/dev/null || true
+			echo "  NTP privacy configured (chrony with NTS)"
+		fi
+	elif [ "$os" = "ubuntu" ] || [ "$os" = "debian" ]; then
+		# Try systemd-timesyncd with NTS or install chrony
+		if apt-get install -y chrony 2>/dev/null; then
+			cat >> /etc/chrony/chrony.conf << 'EOF'
+# NTS-enabled time servers
+server time.cloudflare.com iburst nts
+server nts.netnod.se iburst nts
+
+# Privacy: don't leak system info
+nocertdata
+nosysdata
+EOF
+			systemctl restart chronyd 2>/dev/null || true
+			echo "  NTP privacy configured (chrony with NTS)"
+		fi
+	fi
+}
+
+# ==================== CATEGORY E: PROTOCOL-LEVEL ====================
+
+# E2: Randomize MTU per connection attempt
+randomize_mtu() {
+	echo "Configuring MTU randomization..."
+	# Generate random MTU between 1280 and 1380
+	_rand_mtu=$((1280 + (RANDOM % 100)))
+	
+	# Apply to AmneziaWG config
+	if [ -f /etc/amnezia/amneziawg/awg0.conf ]; then
+		sed_inplace "s/MTU = .*/MTU = $_rand_mtu/" /etc/amnezia/amneziawg/awg0.conf
+		echo "  MTU randomized to: $_rand_mtu"
+	fi
+}
+
+# E5: Generate chaff/decoy traffic
+generate_chaff_traffic() {
+	echo "Configuring chaff traffic generator..."
+	
+	# Create a background script that generates fake HTTP requests
+	cat > /usr/local/bin/chaff-generator.sh << 'EOF'
+#!/bin/sh
+# Chaff traffic generator - sends periodic fake HTTP requests
+
+CHAFF_URLS="https://www.google.com https://www.cloudflare.com https://www.github.com https://www.microsoft.com https://www.apple.com https://www.amazon.com https://www.reddit.com https://www.wikipedia.org"
+
+while true; do
+	# Random sleep between 30-120 seconds
+	sleep $((30 + (RANDOM % 91)))
+	
+	# Pick random URL
+	_url=$(echo "$CHAFF_URLS" | tr ' ' '\n' | shuf -n 1)
+	
+	# Send request with fake user agent
+	_user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+	
+	# Use wget or curl silently
+	wget -q -O /dev/null --user-agent="$_user_agent" --timeout=10 "$_url" 2>/dev/null || \
+		curl -s -o /dev/null -A "$_user_agent" --max-time 10 "$_url" 2>/dev/null || true
+done
+EOF
+	chmod +x /usr/local/bin/chaff-generator.sh
+	
+	# Start chaff generator in background
+	nohup /usr/local/bin/chaff-generator.sh >/dev/null 2>&1 &
+	
+	# Add to startup
+	if [ "$os" = "alpine" ]; then
+		echo '/usr/local/bin/chaff-generator.sh &' >> /etc/local.d/amneziawg.start
+	elif [ "$os" = "ubuntu" ] || [ "$os" = "debian" ]; then
+		cat > /etc/systemd/system/chaff-generator.service << 'EOF'
+[Unit]
+Description=Chaff Traffic Generator
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/chaff-generator.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+		systemctl enable chaff-generator.service 2>/dev/null || true
+		systemctl start chaff-generator.service 2>/dev/null || true
+	fi
+	
+	echo "  Chaff traffic generator started"
+}
+
+# B4: Setup simple-obfs if available
+setup_simple_obfs() {
+	echo "Attempting to setup simple-obfs..."
+	
+	# simple-obfs is deprecated but still useful
+	# Try to install and configure
+	if [ "$os" = "alpine" ]; then
+		if apk add --no-cache simple-obfs 2>/dev/null || \
+		   apk add --no-cache obfs4proxy 2>/dev/null; then
+			echo "  Obfuscation proxy installed"
+			# Note: Requires additional configuration for use with AmneziaWG
+			# This is a placeholder - full integration would require significant changes
+		fi
+	elif [ "$os" = "ubuntu" ] || [ "$os" = "debian" ]; then
+		if apt-get install -y obfs4proxy 2>/dev/null; then
+			echo "  Obfs4proxy installed"
+		fi
+	fi
+}
+
+# Master function to apply all requested anti-DPI measures
+apply_all_anti_dpi() {
+	echo ""
+	echo "═══════════════════════════════════════════════════════════"
+	echo "  Applying Advanced Anti-DPI Measures"
+	echo "═══════════════════════════════════════════════════════════"
+	
+	# Category A
+	setup_dns_privacy
+	apply_dscp_zeroing
+	
+	# Category C
+	randomize_mac
+	randomize_hostname
+	set_utc_timezone
+	setup_ntp_privacy
+	
+	# Category E
+	randomize_mtu
+	generate_chaff_traffic
+	
+	# Category B (if possible)
+	setup_simple_obfs
+	
+	echo "═══════════════════════════════════════════════════════════"
 }
 
 # Apply anti-DPI iptables rules immediately
@@ -2444,6 +2750,12 @@ if [ ! -e "$WG_CONF" ]; then
 	fi
 	new_client
 	start_wg_service
+	
+	# Apply all advanced anti-DPI measures
+	if [ "$os" = "alpine" ]; then
+		apply_all_anti_dpi
+	fi
+	
 	echo ""
 	show_client_qr_code
 	if [ "$auto" != 0 ] && check_dns_name "$server_addr"; then

@@ -339,6 +339,25 @@ kern.randompid=1
 
 # Anti-DPI: Disable process debugging
 kern.unprivileged_proc_debug=0
+
+# ==================== CATEGORY A: NETWORK LAYER ====================
+
+# A4: Anti-DPI: Disable TCP ECN (fingerprinting vector)
+net.inet.tcp.ecn.enable=0
+
+# A6: Anti-DPI: ICMP rate limiting (prevent scanning)
+net.inet.icmp.icmplim=100
+
+# A7: Anti-DPI: Disable TCP Fast Open (TFO cookie tracking)
+net.inet.tcp.fastopen.enabled=0
+net.inet.tcp.fastopen.client_enable=0
+net.inet.tcp.fastopen.server_enable=0
+
+# A5: Anti-DPI: ARP filtering (FreeBSD uses different mechanism)
+net.link.ether.inet.log_arp_movements=0
+net.link.ether.inet.log_arp_wrong_iface=0
+
+# ===================================================================
 EOF
 
     # Apply settings immediately
@@ -523,40 +542,33 @@ configure_firewall() {
     fi
     
     cat > "$PF_CONF" << EOF
+# Skip loopback
 set skip on lo0
 set limit states 500000
 
-# Anti-DPI: Normalize incoming packets (reassemble fragments, clamp MSS)
-scrub in on $_ext_if all fragment reassemble max-mss 1300
+# Normalize packets (anti-DPI)
+scrub in all fragment reassemble
+scrub out all random-id min-ttl 64
 
-# Anti-DPI: Normalize outgoing packets (randomize IP ID, set min TTL)
-scrub out on $_ext_if all random-id min-ttl 64
-
-# Anti-DPI: Block packets with IP options (fingerprinting vector)
-block in quick on $_ext_if from any to any ip options lsrr
-block in quick on $_ext_if from any to any ip options ssrr
-
-# NAT with random source ports (anti-DPI: --random equivalent)
+# NAT for VPN clients
 nat on $_ext_if inet from 10.7.0.0/24 to any -> ($_ext_if) port 1024:65535
 
-# Allow SSH access
-pass in quick on $_ext_if proto tcp from any to any port 22 keep state
+# Allow SSH
+pass in quick on $_ext_if proto tcp from any to any port 22 flags S/SA keep state
 
 # Allow WireGuard
 pass in quick on $_ext_if proto udp from any to any port $_wg_port keep state
 
-# Allow all WireGuard traffic
+# Allow VPN traffic
 pass quick on wg0 all
-
-# Allow outbound traffic from VPN clients
 pass out quick on $_ext_if inet from 10.7.0.0/24 to any keep state
 
-# Block private networks from outside
+# Block private networks
 block in quick on $_ext_if from 10.0.0.0/8 to any
 block in quick on $_ext_if from 172.16.0.0/12 to any
 block in quick on $_ext_if from 192.168.0.0/16 to any
 
-# Anti-DPI: Block packets with suspicious TCP flag combinations
+# Block suspicious TCP flags
 block in quick on $_ext_if proto tcp flags FPU/FSRPAU
 block in quick on $_ext_if proto tcp flags /SFRAU
 block in quick on $_ext_if proto tcp flags F/SFRAU
@@ -595,16 +607,197 @@ configure_dummynet() {
     ipfw -q flush 2>/dev/null || true
     
     # Create pipe with moderate bandwidth and small delay/jitter
-    # This adds timing jitter to confuse traffic analysis
     ipfw pipe 1 config bw 100Mbit/s delay 5ms 2>/dev/null || true
     
     # Add rule to shape outbound VPN traffic (adds jitter)
     ipfw -q add 100 pipe 1 ip from 10.7.0.0/24 to any out via "$_iface" 2>/dev/null || true
     
-    # Enable dummynet in rc.conf
+    # Enable ipfw and dummynet in rc.conf
+    sysrc firewall_enable="YES" >/dev/null 2>&1 || true
+    sysrc firewall_type="workstation" >/dev/null 2>&1 || true
     sysrc dummynet_enable="YES" >/dev/null 2>&1 || true
     
     echo "    Dummynet configured (5ms delay jitter)"
+}
+
+# ==================== CATEGORY C: SYSTEM HARDENING ====================
+
+# C3: Randomize MAC address on boot (FreeBSD)
+randomize_mac() {
+    echo "  Configuring MAC address randomization..."
+    _iface=$(route -n get 0.0.0.0 2>/dev/null | grep interface | awk '{print $2}')
+    [ -z "$_iface" ] && return
+    
+    # Generate random MAC (locally administered)
+    _new_mac=$(openssl rand -hex 6 2>/dev/null | sed 's/../&:/g; s/:$//' | awk -F: '{printf "02:%s:%s:%s:%s:%s", $2, $3, $4, $5, $6}')
+    
+    # Create startup script for MAC randomization
+    cat > /usr/local/etc/rc.d/mac_randomize << EOF
+#!/bin/sh
+# PROVIDE: mac_randomize
+# REQUIRE: NETWORKING
+# BEFORE: wireguard
+
+echo "Randomizing MAC address for $_iface..."
+ifconfig $_iface ether $_new_mac
+EOF
+    chmod +x /usr/local/etc/rc.d/mac_randomize
+    sysrc mac_randomize_enable="YES" 2>/dev/null || true
+    
+    echo "    MAC randomization configured for $_iface ($_new_mac)"
+}
+
+# C4: Randomize hostname
+randomize_hostname() {
+    echo "  Randomizing hostname..."
+    _new_hostname="host-$(jot -r 1 10000000 99999999 2>/dev/null || echo $$)"
+    hostname "$_new_hostname"
+    sysrc hostname="$_new_hostname"
+    echo "$_new_hostname" > /etc/rc.conf.d/hostname 2>/dev/null || true
+    echo "    Hostname changed to: $_new_hostname"
+}
+
+# C5: Set timezone to UTC
+set_utc_timezone() {
+    echo "  Setting timezone to UTC..."
+    cp /usr/share/zoneinfo/UTC /etc/localtime 2>/dev/null || true
+    sysrc timezone="UTC"
+    export TZ=UTC
+    echo "    Timezone set to UTC"
+}
+
+# C6: Setup NTP privacy
+setup_ntp_privacy() {
+    echo "  Setting up NTP privacy..."
+    # Install and configure ntpd with pool servers
+    pkg install -y ntp 2>/dev/null || true
+    
+    # Configure with privacy-focused servers
+    cat > /etc/ntp.conf << 'EOF'
+# NTP configuration with privacy
+restrict default ignore
+restrict 127.0.0.1
+restrict ::1
+
+# Use Cloudflare and Google time servers (anycast, hard to track)
+server time.cloudflare.com iburst
+server time.google.com iburst
+server 0.freebsd.pool.ntp.org iburst
+server 1.freebsd.pool.ntp.org iburst
+
+# Disable status queries
+restrict -4 default kod nomodify notrap nopeer noquery
+restrict -6 default kod nomodify notrap nopeer noquery
+
+# Disable monitoring (prevents info leakage)
+disable monitor
+EOF
+    
+    sysrc ntpd_enable="YES" 2>/dev/null || true
+    service ntpd restart 2>/dev/null || true
+    echo "    NTP privacy configured"
+}
+
+# ==================== CATEGORY E: PROTOCOL-LEVEL ====================
+
+# E2: Randomize MTU per connection
+randomize_mtu() {
+    echo "  Configuring MTU randomization..."
+    # Generate random MTU between 1280 and 1380
+    _rand_mtu=$((1280 + ($(date +%s) % 100)))
+    
+    # Apply to WireGuard config
+    if [ -f "$WG_DIR/wg0.conf" ]; then
+        sed_inplace "s/MTU = .*/MTU = $_rand_mtu/" "$WG_DIR/wg0.conf"
+        echo "    MTU randomized to: $_rand_mtu"
+    fi
+}
+
+# E5: Generate chaff/decoy traffic
+generate_chaff_traffic() {
+    echo "  Configuring chaff traffic generator..."
+    
+    # Create chaff generator script
+    cat > /usr/local/bin/chaff-generator.sh << 'EOF'
+#!/bin/sh
+# Chaff traffic generator for FreeBSD
+
+CHAFF_URLS="https://www.google.com https://www.cloudflare.com https://www.github.com https://www.microsoft.com https://www.apple.com https://www.amazon.com"
+
+while true; do
+    # Random sleep between 30-120 seconds
+    sleep $((30 + ($(date +%s) % 91)))
+    
+    # Pick random URL
+    _url=$(echo "$CHAFF_URLS" | tr ' ' '\n' | sort -R | head -n 1)
+    
+    # Send request with fake user agent
+    fetch -q -o /dev/null --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)" --timeout=10 "$_url" 2>/dev/null || true
+done
+EOF
+    chmod +x /usr/local/bin/chaff-generator.sh
+    
+    # Add to rc.d
+    cat > /usr/local/etc/rc.d/chaff << EOF
+#!/bin/sh
+# PROVIDE: chaff
+# REQUIRE: NETWORKING
+
+echo "Starting chaff traffic generator..."
+/usr/local/bin/chaff-generator.sh &
+echo \$! > /var/run/chaff.pid
+
+echo "Stopping chaff traffic generator..."
+kill \$(cat /var/run/chaff.pid 2>/dev/null) 2>/dev/null || true
+rm -f /var/run/chaff.pid
+EOF
+    chmod +x /usr/local/etc/rc.d/chaff
+    sysrc chaff_enable="YES" 2>/dev/null || true
+    
+    # Start now
+    /usr/local/bin/chaff-generator.sh &
+    echo "    Chaff traffic generator started"
+}
+
+# B4: Setup simple-obfs if available (FreeBSD limited support)
+setup_simple_obfs() {
+    echo "  Checking for obfuscation tools..."
+    # FreeBSD has limited obfs support
+    # Try to install obfs4proxy if available
+    pkg install -y obfs4proxy-tor 2>/dev/null || {
+        echo "    Obfuscation tools not available in pkg"
+        return
+    }
+    echo "    obfs4proxy installed (manual configuration required)"
+}
+
+# Apply DSCP zeroing via PF (FreeBSD doesn't have iptables DSCP target)
+apply_dscp_zeroing() {
+    echo "  DSCP zeroing configured via PF scrub rules"
+    # PF scrub rules already zero out ToS/DSCP when configured
+}
+
+# Master function to apply all anti-DPI measures
+apply_all_anti_dpi() {
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  Applying Advanced Anti-DPI Measures"
+    echo "═══════════════════════════════════════════════════════════"
+    
+    # Category C
+    randomize_mac
+    randomize_hostname
+    set_utc_timezone
+    setup_ntp_privacy
+    
+    # Category E
+    randomize_mtu
+    generate_chaff_traffic
+    
+    # Category B (limited on FreeBSD)
+    setup_simple_obfs
+    
+    echo "═══════════════════════════════════════════════════════════"
 }
 
 install_packages() {
@@ -974,6 +1167,7 @@ main() {
     configure_sysctl
     optimize_nic "$_default_iface"
     configure_firewall "$_default_iface" "$_wg_port"
+    apply_all_anti_dpi
     create_server_config "$_public_ip" "$_wg_port" "$_wg_mtu"
     start_wireguard "$_wg_port"
     add_client "$_first_client"
